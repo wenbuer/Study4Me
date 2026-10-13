@@ -119,9 +119,16 @@ def build_mark(color: str = "currentColor") -> str:
          f'width="{SIZE}" height="{SIZE}" fill="none" stroke="currentColor" '
          f'stroke-linecap="round" stroke-linejoin="round">']
 
-    # 耳朵与头
+    # 耳朵：只留露在脑袋外面的那一截。用遮罩把落在头部轮廓里的部分切掉，
+    # 否则耳朵圆的下半圈会穿进脑袋里，看起来像多画了一道线。
+    s.append('<defs><mask id="zhizhi-ear">'
+             f'<rect width="{SIZE}" height="{SIZE}" fill="#fff"/>'
+             '<ellipse cx="256" cy="266" rx="146" ry="142" fill="#000"/>'
+             '</mask></defs>')
+    s.append('<g mask="url(#zhizhi-ear)">')
     s.append(line(ellipse(150, 152, 76, 76), width=40, color="currentColor"))
     s.append(line(ellipse(362, 152, 76, 76), width=40, color="currentColor"))
+    s.append('</g>')
     s.append(line(ellipse(256, 266, 126, 122), width=40, color="currentColor"))
 
     # 眼睛

@@ -1,6 +1,8 @@
+![致知](shots/banner-v3.png)
+
 # 致知 · zhizhiStudy
 
-> 把一份资料变成一套清晰的学习计划：知识点、自测题、复习安排，都在一个窗口里完成。
+> 学以致知，孜孜不倦：把一份资料变成一套清晰的学习计划，知识点、自测题、复习安排都在一个窗口里完成。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/wenbuer/zhizhiStudy)](https://github.com/wenbuer/zhizhiStudy/releases)
@@ -15,29 +17,22 @@
 
 ## 界面
 
-![开始](shots/start.png)
+<table>
+  <tr>
+    <td width="50%"><img src="shots/start.png" alt="开始页" /><br /><sub>开始：今天要做什么，一眼看清</sub></td>
+    <td width="50%"><img src="shots/materials.png" alt="材料页" /><br /><sub>材料：链接、文件、粘贴都能导入</sub></td>
+  </tr>
+  <tr>
+    <td><img src="shots/learn.png" alt="学习页" /><br /><sub>学习：按章节读讲解，读完自测</sub></td>
+    <td><img src="shots/quiz.png" alt="测验出卷" /><br /><sub>测验：选好范围与题型，自动出卷</sub></td>
+  </tr>
+  <tr>
+    <td><img src="shots/quiz-result.png" alt="测验成绩与复习要点" /><br /><sub>成绩：交卷即出分与复习要点</sub></td>
+    <td><img src="shots/insight.png" alt="学习看板" /><br /><sub>看板：知识地图、复习计划与阶段指导</sub></td>
+  </tr>
+</table>
 
-> 开始页：今天要做的都在这里，学完自动划掉。
-
-![学习](shots/learn.png)
-
-> 学习页：左侧是按章节分好的目录，右侧是完整讲解，读完有要点和自测题。
-
-![测验](shots/quiz.png)
-
-> 测验：选好范围与题型，一份卷子自动出好。
-
-![测验成绩](shots/quiz-result.png)
-
-> 交卷即出分，逐题回顾并生成复习要点，写到对应知识点上。
-
-![看板](shots/insight.png)
-
-> 看板：知识地图、复习计划、阶段指导三张图，一眼看清进度。
-
-![设置](shots/settings.png)
-
-> 设置：模型接口、网络代理、每日提醒、开机自启，改完立即生效。
+<sub>另有**练习**页负责单卡作答与复习排期，**设置**页负责模型接口、网络代理与每日提醒。</sub>
 
 ## 功能
 
