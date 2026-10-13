@@ -403,19 +403,38 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
 
 /* 学习卡 */
 
-/* 目录与正文各自滚动，长文章不会把目录顶走 */
+/* 学习页占满整个可用高度：两栏各自滚动，底下不留空白 */
+.view[data-view="learn"] {
+  padding: 20px 28px 24px;
+  overflow: hidden;
+}
+
+.view[data-view="learn"].is-active { display: flex; flex-direction: column; }
+
+.view[data-view="learn"] .grid-study {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
 .study-side {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100vh - 214px);
+  min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
 }
+
 .study-card {
-  min-height: 420px;
-  max-height: calc(100vh - 214px);
+  min-height: 0;
   overflow-y: auto;
+}
+
+/* 正文居中成一条阅读栏，窗口宽了就居中、窄了就跟着缩 */
+.study-inner {
+  max-width: min(760px, 100%);
+  margin: 0 auto;
 }
 
 /* 学习页工具条：素材库切换 + 搜索，收在一个浅色工具面板里 */
@@ -572,9 +591,8 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
   white-space: pre;
 }
 
-/* 学习页：完整讲解的 Markdown 排版 */
+/* 学习页：完整讲解的 Markdown 排版（宽度交给 .study-inner 控制） */
 .unit-body {
-  max-width: 76ch;
   font-size: 14px;
   line-height: 1.8;
   color: var(--fg);
