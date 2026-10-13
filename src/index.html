@@ -28,7 +28,11 @@
         </button>
         <button class="nav-item" data-view="exam">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6M9 13h4" /></svg>
-          <span>考试</span>
+          <span>练习</span>
+        </button>
+        <button class="nav-item" data-view="quiz">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7zM10 8h4M10 12h4M10 16h2" /></svg>
+          <span>测验</span>
         </button>
         <button class="nav-item" data-view="insight">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15l3-4 3 3 4-6" /></svg>
@@ -182,6 +186,7 @@
               <span class="block-hint" id="examSource"></span>
             </div>
             <p class="exam-question" id="examQuestion">点击右侧「开始一道题」</p>
+            <div id="examNotesPanel"></div>
             <label class="field">
               <span class="field-label">你的回答</span>
               <textarea id="examAnswer" rows="9" placeholder="用自己的话作答，讲清机制、取舍与实践"></textarea>
@@ -207,6 +212,21 @@
               <div id="gradeBody"></div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- 测验 -->
+      <section class="view" data-view="quiz">
+        <div class="grid-quiz">
+          <div class="col-main" id="quizMain"></div>
+          <div class="col-side" id="quizSide"></div>
+        </div>
+        <div class="block" id="quizHistory">
+          <div class="block-head">
+            <h2>测验记录</h2>
+            <span class="block-hint" id="quizHistoryHint"></span>
+          </div>
+          <div class="list list-compact" id="quizHistoryList"></div>
         </div>
       </section>
 

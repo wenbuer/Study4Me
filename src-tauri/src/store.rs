@@ -39,9 +39,47 @@ CREATE TABLE IF NOT EXISTS cards (
     last_review  TEXT,
     due          TEXT NOT NULL DEFAULT '',
     learned      INTEGER NOT NULL DEFAULT 0,
+    exam_notes   TEXT NOT NULL DEFAULT '[]',
     created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS exams (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    material_id INTEGER,
+    scope       TEXT NOT NULL DEFAULT '[]',
+    slot_kinds  TEXT NOT NULL DEFAULT '[]',
+    total       INTEGER NOT NULL DEFAULT 0,
+    full_score  REAL NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'draft',
+    score       REAL,
+    correct     INTEGER NOT NULL DEFAULT 0,
+    report      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS exam_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    card_id     INTEGER,
+    card_title  TEXT NOT NULL DEFAULT '',
+    stem        TEXT NOT NULL DEFAULT '',
+    options     TEXT NOT NULL DEFAULT '[]',
+    answer      TEXT NOT NULL DEFAULT '',
+    explain     TEXT NOT NULL DEFAULT '',
+    points      REAL NOT NULL DEFAULT 1,
+    user_answer TEXT NOT NULL DEFAULT '',
+    score       REAL,
+    verdict     TEXT NOT NULL DEFAULT '',
+    feedback    TEXT NOT NULL DEFAULT '',
+    missed      TEXT NOT NULL DEFAULT '[]',
+    suggestion  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_exam_items_exam ON exam_items(exam_id);
 CREATE INDEX IF NOT EXISTS idx_cards_material ON cards(material_id);
 CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due);
 CREATE INDEX IF NOT EXISTS idx_cards_learned ON cards(learned);
@@ -123,6 +161,8 @@ pub struct Card {
     pub last_review: Option<String>,
     pub due: String,
     pub learned: bool,
+    /// 测验里答错/答漏的要点，按时间追加，学习时能看到
+    pub exam_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +212,7 @@ impl Store {
         // 老库补列（已存在时会报错，忽略即可）
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN section TEXT NOT NULL DEFAULT ''", []);
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN content TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN exam_notes TEXT NOT NULL DEFAULT '[]'", []);
         Ok(Self { conn })
     }
 
@@ -279,6 +320,7 @@ impl Store {
             last_review: r.get("last_review")?,
             due: r.get("due")?,
             learned: r.get::<_, i64>("learned")? != 0,
+            exam_notes: parse_list(&r.get::<_, String>("exam_notes").unwrap_or_default()),
         })
     }
 
@@ -551,6 +593,220 @@ impl Store {
             remaining_units,
         }))
     }
+
+    // ── 测验 ───────────────────────────────────────────────
+
+    /// 建一份卷子：题目位置先占好（只有题型和分值），题干由模型分批填。
+    pub fn create_exam(&self, title: &str, material_id: Option<i64>, scope: &[i64],
+                       kinds: &[String], points: &[f64], created_at: &str,
+                       cards: &[(i64, String)]) -> Result<i64> {
+        let full: f64 = points.iter().sum();
+        self.conn.execute(
+            "INSERT INTO exams (title, material_id, scope, slot_kinds, total, full_score, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'draft', ?7)",
+            params![title, material_id, serde_json::to_string(scope)?,
+                    serde_json::to_string(kinds)?, kinds.len() as i64, full, created_at],
+        )?;
+        let exam_id = self.conn.last_insert_rowid();
+        for (i, kind) in kinds.iter().enumerate() {
+            let (card_id, card_title) = cards
+                .get(i % cards.len().max(1))
+                .cloned()
+                .unwrap_or((0, String::new()));
+            self.conn.execute(
+                "INSERT INTO exam_items (exam_id, seq, kind, card_id, card_title, points)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![exam_id, i as i64 + 1, kind,
+                        if card_id == 0 { None } else { Some(card_id) },
+                        card_title, points[i]],
+            )?;
+        }
+        Ok(exam_id)
+    }
+
+    pub fn pending_exam_items(&self, exam_id: i64, limit: i64) -> Result<Vec<ExamItem>> {
+        let sql = format!(
+            "{} WHERE exam_id = ?1 AND stem = '' ORDER BY seq ASC LIMIT ?2",
+            Self::EXAM_ITEM_SELECT
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![exam_id, limit], Self::map_exam_item)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn fill_exam_item(&self, id: i64, stem: &str, options: &[String], answer: &str, explain: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE exam_items SET stem = ?2, options = ?3, answer = ?4, explain = ?5 WHERE id = ?1",
+            params![id, stem, serde_json::to_string(options)?, answer, explain],
+        )?;
+        Ok(())
+    }
+
+    pub fn exam_items(&self, exam_id: i64) -> Result<Vec<ExamItem>> {
+        let sql = format!("{} WHERE exam_id = ?1 ORDER BY seq ASC", Self::EXAM_ITEM_SELECT);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![exam_id], Self::map_exam_item)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn get_exam(&self, id: i64) -> Result<Option<Exam>> {
+        let sql = format!("{} WHERE id = ?1", Self::EXAM_SELECT);
+        Ok(self.conn.query_row(&sql, params![id], Self::map_exam).optional()?)
+    }
+
+    pub fn list_exams(&self, limit: i64) -> Result<Vec<Exam>> {
+        let sql = format!("{} ORDER BY id DESC LIMIT ?1", Self::EXAM_SELECT);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit], Self::map_exam)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn save_exam_answer(&self, item_id: i64, answer: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE exam_items SET user_answer = ?2 WHERE id = ?1",
+            params![item_id, answer],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn grade_exam_item(&self, item_id: i64, score: f64, verdict: &str, feedback: &str,
+                           missed: &[String], suggestion: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE exam_items SET score = ?2, verdict = ?3, feedback = ?4, missed = ?5, suggestion = ?6
+             WHERE id = ?1",
+            params![item_id, score, verdict, feedback,
+                    serde_json::to_string(missed)?, suggestion],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_exam(&self, id: i64, score: f64, correct: i64, report: &str, finished_at: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE exams SET status = 'done', score = ?2, correct = ?3, report = ?4, finished_at = ?5
+             WHERE id = ?1",
+            params![id, score, correct, report, finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_exam(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM exam_items WHERE exam_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM exams WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// 把测验要点写回卡片（去重、最多留 8 条），学习时能看到。
+    pub fn append_card_note(&self, card_id: i64, note: &str) -> Result<()> {
+        let note = note.trim();
+        if note.is_empty() {
+            return Ok(());
+        }
+        let current: String = self.conn
+            .query_row("SELECT exam_notes FROM cards WHERE id = ?1", params![card_id], |r| r.get(0))
+            .unwrap_or_else(|_| "[]".to_string());
+        let mut notes = parse_list(&current);
+        if notes.iter().any(|item| item == note) {
+            return Ok(());
+        }
+        notes.push(note.to_string());
+        if notes.len() > 8 {
+            let drop = notes.len() - 8;
+            notes.drain(0..drop);
+        }
+        self.conn.execute(
+            "UPDATE cards SET exam_notes = ?2 WHERE id = ?1",
+            params![card_id, serde_json::to_string(&notes)?],
+        )?;
+        Ok(())
+    }
+
+    const EXAM_SELECT: &'static str =
+        "SELECT e.*, (SELECT COUNT(*) FROM exam_items i WHERE i.exam_id = e.id AND i.stem <> '') AS made
+         FROM exams e";
+
+    const EXAM_ITEM_SELECT: &'static str = "SELECT * FROM exam_items";
+
+    fn map_exam(r: &rusqlite::Row<'_>) -> rusqlite::Result<Exam> {
+        Ok(Exam {
+            id: r.get("id")?,
+            title: r.get("title")?,
+            material_id: r.get("material_id")?,
+            total: r.get("total")?,
+            full_score: r.get("full_score")?,
+            status: r.get("status")?,
+            score: r.get("score")?,
+            correct: r.get("correct")?,
+            report: r.get("report")?,
+            created_at: r.get("created_at")?,
+            finished_at: r.get("finished_at")?,
+            made: r.get("made").unwrap_or(0),
+        })
+    }
+
+    fn map_exam_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExamItem> {
+        let options: String = r.get("options").unwrap_or_default();
+        let missed: String = r.get("missed").unwrap_or_default();
+        Ok(ExamItem {
+            id: r.get("id")?,
+            exam_id: r.get("exam_id")?,
+            seq: r.get("seq")?,
+            kind: r.get("kind")?,
+            card_id: r.get("card_id")?,
+            card_title: r.get("card_title").unwrap_or_default(),
+            stem: r.get("stem").unwrap_or_default(),
+            options: parse_list(&options),
+            answer: r.get("answer").unwrap_or_default(),
+            explain: r.get("explain").unwrap_or_default(),
+            points: r.get("points").unwrap_or(1.0),
+            user_answer: r.get("user_answer").unwrap_or_default(),
+            score: r.get("score")?,
+            verdict: r.get("verdict").unwrap_or_default(),
+            feedback: r.get("feedback").unwrap_or_default(),
+            missed: parse_list(&missed),
+            suggestion: r.get("suggestion").unwrap_or_default(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Exam {
+    pub id: i64,
+    pub title: String,
+    pub material_id: Option<i64>,
+    pub total: i64,
+    pub full_score: f64,
+    pub status: String,
+    pub score: Option<f64>,
+    pub correct: i64,
+    pub report: String,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    /// 已经出好的题数（stem 非空）
+    pub made: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExamItem {
+    pub id: i64,
+    pub exam_id: i64,
+    pub seq: i64,
+    pub kind: String,
+    pub card_id: Option<i64>,
+    pub card_title: String,
+    pub stem: String,
+    pub options: Vec<String>,
+    pub answer: String,
+    pub explain: String,
+    pub points: f64,
+    pub user_answer: String,
+    pub score: Option<f64>,
+    pub verdict: String,
+    pub feedback: String,
+    pub missed: Vec<String>,
+    pub suggestion: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

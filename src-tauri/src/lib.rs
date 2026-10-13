@@ -12,7 +12,7 @@ pub mod store;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use futures::StreamExt;
@@ -687,6 +687,508 @@ fn reveal_main(app: &tauri::AppHandle) {
     }
 }
 
+
+// ── 测验（出卷 / 判分 / 复习要点）─────────────────────────
+
+#[cfg(test)]
+mod exam_tests {
+    use super::*;
+
+    #[test]
+    fn objective_grading_covers_every_kind() {
+        // 单选
+        let (score, verdict, ..) = grade_objective("single", "B", "b", 2.0);
+        assert_eq!((score, verdict), (2.0, "correct"));
+        let (score, verdict, ..) = grade_objective("single", "B", "C", 2.0);
+        assert_eq!((score, verdict), (0.0, "wrong"));
+        // 多选：全对、漏选给部分分、错选零分
+        let (score, verdict, ..) = grade_objective("multi", "ACD", "DCA", 3.0);
+        assert_eq!((score, verdict), (3.0, "correct"));
+        let (score, verdict, ..) = grade_objective("multi", "ACD", "AC", 3.0);
+        assert_eq!(verdict, "partial");
+        assert!((score - 2.0).abs() < 0.01);
+        let (score, verdict, ..) = grade_objective("multi", "ACD", "AB", 3.0);
+        assert_eq!((score, verdict), (0.0, "wrong"));
+        // 判断
+        let (score, verdict, ..) = grade_objective("judge", "正确", "对", 1.0);
+        assert_eq!((score, verdict), (1.0, "correct"));
+        // 填空：多个可接受写法
+        let (score, verdict, ..) = grade_objective("blank", "感知模块|Perception", " perception ", 2.0);
+        assert_eq!((score, verdict), (2.0, "correct"));
+        let (score, verdict, ..) = grade_objective("blank", "感知模块", "推理模块", 2.0);
+        assert_eq!((score, verdict), (0.0, "wrong"));
+    }
+
+    #[test]
+    fn slots_interleave_kinds_and_sum_points() {
+        let plan = vec![
+            ExamPlan { kind: "single".into(), count: 3 },
+            ExamPlan { kind: "judge".into(), count: 1 },
+            ExamPlan { kind: "case".into(), count: 1 },
+        ];
+        let (kinds, points) = build_slots(&plan);
+        assert_eq!(kinds.len(), 5);
+        assert_eq!(kinds[0], "single");
+        assert_eq!(kinds[1], "judge");
+        assert_eq!(kinds[2], "case");
+        assert_eq!(points.iter().sum::<f64>(), 2.0 * 3.0 + 1.0 + 8.0);
+    }
+}
+
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExamPlan {
+    kind: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExamOut {
+    exam_id: i64,
+    total: i64,
+    full_score: f64,
+    cards: i64,
+}
+
+/// 各题型默认满分与展示顺序。
+fn points_of(kind: &str) -> f64 {
+    match kind {
+        "single" => 2.0,
+        "multi" => 3.0,
+        "judge" => 1.0,
+        "blank" => 2.0,
+        "short" => 5.0,
+        "case" => 8.0,
+        _ => 2.0,
+    }
+}
+
+/// 把各题型的数量打散成交替的题序，避免前 10 道全是单选。
+fn build_slots(plan: &[ExamPlan]) -> (Vec<String>, Vec<f64>) {
+    let mut left: Vec<(String, i64)> = plan
+        .iter()
+        .filter(|item| item.count > 0)
+        .map(|item| (item.kind.clone(), item.count))
+        .collect();
+    let mut kinds = Vec::new();
+    while left.iter().any(|(_, n)| *n > 0) {
+        for (kind, count) in left.iter_mut() {
+            if *count > 0 {
+                kinds.push(kind.clone());
+                *count -= 1;
+            }
+        }
+    }
+    let points = kinds.iter().map(|kind| points_of(kind)).collect();
+    (kinds, points)
+}
+
+/// 按抽题策略挑单元；平均取样，别把整卷都压在同一章。
+fn pick_cards(cards: &[Card], strategy: &str, needed: usize) -> Vec<Card> {
+    let mut pool: Vec<Card> = match strategy {
+        "learned" => cards.iter().filter(|c| c.learned).cloned().collect(),
+        "weak" => {
+            let mut learned: Vec<Card> = cards.iter().filter(|c| c.learned).cloned().collect();
+            learned.sort_by(|a, b| a.stability.partial_cmp(&b.stability).unwrap_or(std::cmp::Ordering::Equal));
+            learned.extend(cards.iter().filter(|c| !c.learned).cloned());
+            learned
+        }
+        _ => cards.to_vec(),
+    };
+    if pool.is_empty() {
+        return pool;
+    }
+    if pool.len() <= needed {
+        return pool;
+    }
+    let step = pool.len() as f64 / needed as f64;
+    let mut picked = Vec::new();
+    for i in 0..needed {
+        let index = ((i as f64) * step) as usize;
+        if let Some(card) = pool.get(index.min(pool.len() - 1)) {
+            picked.push(card.clone());
+        }
+    }
+    pool = picked;
+    pool
+}
+
+#[tauri::command]
+fn create_exam(
+    state: State<'_, AppState>,
+    material_id: Option<i64>,
+    strategy: String,
+    plan: Vec<ExamPlan>,
+    title: Option<String>,
+) -> Result<ExamOut, String> {
+    let store = state.store.lock().unwrap();
+    let (kinds, points) = build_slots(&plan);
+    if kinds.is_empty() {
+        return Err("至少选一种题型".into());
+    }
+    let all = store.list_cards(material_id).map_err(err_str)?;
+    if all.is_empty() {
+        return Err("这份范围里还没有学习单元".into());
+    }
+    let total = kinds.len();
+    let needed = ((total as f64) / 2.0).ceil() as usize;
+    let picked = pick_cards(&all, &strategy, needed.max(1));
+    if picked.is_empty() {
+        return Err("这个抽题范围里没有可用的单元，换个范围或策略再试".into());
+    }
+    let pairs: Vec<(i64, String)> = picked.iter().map(|c| (c.id, c.title.clone())).collect();
+    let scope: Vec<i64> = picked.iter().map(|c| c.id).collect();
+    let name = title.unwrap_or_else(|| {
+        let base = if material_id.is_some() {
+            picked.first().map(|c| c.material_title.clone()).unwrap_or_default()
+        } else {
+            "全部素材库".to_string()
+        };
+        format!("{base} · {total} 题")
+    });
+    let exam_id = store
+        .create_exam(&name, material_id, &scope, &kinds, &points, &now_iso(), &pairs)
+        .map_err(err_str)?;
+    Ok(ExamOut {
+        exam_id,
+        total: total as i64,
+        full_score: points.iter().sum(),
+        cards: pairs.len() as i64,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExamStepOut {
+    made: i64,
+    remaining: i64,
+    done: bool,
+    error: Option<String>,
+}
+
+/// 出题分步走：一次处理一小批单元，界面能看到进度，失败也能续。
+#[tauri::command]
+async fn exam_step(
+    state: State<'_, AppState>,
+    exam_id: i64,
+    batch: usize,
+) -> Result<ExamStepOut, String> {
+    let pending: Vec<store::ExamItem> = {
+        let store = state.store.lock().unwrap();
+        store.pending_exam_items(exam_id, batch.max(1) as i64).map_err(err_str)?
+    };
+
+    if pending.is_empty() {
+        let made = {
+            let store = state.store.lock().unwrap();
+            store.exam_items(exam_id).map_err(err_str)?.iter().filter(|i| !i.stem.is_empty()).count() as i64
+        };
+        return Ok(ExamStepOut { made, remaining: 0, done: true, error: None });
+    }
+
+    // 同一张卡上的题合并成一次调用，省次数也不容易串味
+    let mut groups: Vec<(i64, Vec<store::ExamItem>)> = Vec::new();
+    for item in pending {
+        match item.card_id {
+            Some(card_id) => match groups.iter_mut().find(|(id, _)| *id == card_id) {
+                Some((_, list)) => list.push(item),
+                None => groups.push((card_id, vec![item])),
+            },
+            None => groups.push((0, vec![item])),
+        }
+    }
+
+    let llm = state.llm.read().unwrap().clone();
+    let cards: Vec<Card> = {
+        let store = state.store.lock().unwrap();
+        store.list_cards(None).map_err(err_str)?
+    };
+
+    let mut first_error: Option<String> = None;
+    let mut filled = 0i64;
+    for (card_id, items) in groups {
+        let card = cards.iter().find(|c| c.id == card_id).cloned();
+        let Some(card) = card else { continue };
+        let asks: Vec<(String, f64)> = items.iter().map(|i| (i.kind.clone(), i.points)).collect();
+        match llm.make_questions(&card.title, &card.content, &asks).await {
+            Ok(questions) => {
+                let store = state.store.lock().unwrap();
+                for (index, item) in items.iter().enumerate() {
+                    let question = questions.get(index);
+                    let (stem, options, answer, explain) = match question {
+                        Some(q) if !q.stem.trim().is_empty() => (
+                            q.stem.clone(),
+                            q.options.clone(),
+                            q.answer.clone(),
+                            q.explain.clone(),
+                        ),
+                        _ => (
+                            format!("（这道题没出出来，点「继续出题」重试）{}", card.title),
+                            Vec::new(),
+                            String::new(),
+                            String::new(),
+                        ),
+                    };
+                    store.fill_exam_item(item.id, &stem, &options, &answer, &explain).map_err(err_str)?;
+                    filled += 1;
+                }
+            }
+            Err(error) => {
+                eprintln!("[出题] 失败：{error}");
+                if first_error.is_none() {
+                    first_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    let (made, remaining) = {
+        let store = state.store.lock().unwrap();
+        let items = store.exam_items(exam_id).map_err(err_str)?;
+        let made = items.iter().filter(|i| !i.stem.is_empty()).count() as i64;
+        let remaining = items.iter().filter(|i| i.stem.is_empty()).count() as i64;
+        (made, remaining)
+    };
+    let _ = filled;
+    Ok(ExamStepOut { made, remaining, done: remaining == 0, error: first_error })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExamPaper {
+    exam: store::Exam,
+    items: Vec<store::ExamItem>,
+}
+
+#[tauri::command]
+fn get_exam(state: State<'_, AppState>, exam_id: i64) -> Result<ExamPaper, String> {
+    let store = state.store.lock().unwrap();
+    let exam = store.get_exam(exam_id).map_err(err_str)?.ok_or("卷子不存在")?;
+    let items = store.exam_items(exam_id).map_err(err_str)?;
+    Ok(ExamPaper { exam, items })
+}
+
+#[tauri::command]
+fn list_exams(state: State<'_, AppState>) -> Result<Vec<store::Exam>, String> {
+    state.store.lock().unwrap().list_exams(50).map_err(err_str)
+}
+
+#[tauri::command]
+fn save_exam_answer(state: State<'_, AppState>, item_id: i64, answer: String) -> Result<(), String> {
+    state.store.lock().unwrap().save_exam_answer(item_id, &answer).map_err(err_str)
+}
+
+#[tauri::command]
+fn delete_exam(state: State<'_, AppState>, exam_id: i64) -> Result<(), String> {
+    state.store.lock().unwrap().delete_exam(exam_id).map_err(err_str)
+}
+
+/// 客观题本地判：归一化后比对，不花模型调用。
+fn grade_objective(kind: &str, answer: &str, user: &str, points: f64) -> (f64, &'static str, String, Vec<String>, String) {
+    let norm = |text: &str| -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !"，。、；：（）()[],.！？!?".contains(*c))
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let letters = |text: &str| -> Vec<String> {
+        text.chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_uppercase().to_string())
+            .collect()
+    };
+    let right_answer = format!("正确答案：{}", answer.trim());
+
+    match kind {
+        "single" => {
+            let ok = norm(user) == norm(answer) || letters(user) == letters(answer);
+            let score = if ok { points } else { 0.0 };
+            let feedback = if ok { "选对了。".to_string() } else { format!("选错了。{right_answer}") };
+            (score, if ok { "correct" } else { "wrong" }, feedback, vec![], String::new())
+        }
+        "multi" => {
+            let mut want = letters(answer);
+            let mut got = letters(user);
+            want.sort();
+            want.dedup();
+            got.sort();
+            got.dedup();
+            if !want.is_empty() && got == want {
+                (points, "correct", "全选对了。".to_string(), vec![], String::new())
+            } else if !got.is_empty() && got.iter().all(|item| want.contains(item)) {
+                let score = points * (got.len() as f64 / want.len() as f64);
+                let missed: Vec<String> = want.iter().filter(|item| !got.contains(item)).cloned().collect();
+                (
+                    score,
+                    "partial",
+                    format!("漏选。{right_answer}"),
+                    missed,
+                    String::new(),
+                )
+            } else {
+                (0.0, "wrong", format!("选错了。{right_answer}"), vec![], String::new())
+            }
+        }
+        "judge" => {
+            let judge = |text: &str| -> bool {
+                let value = norm(text);
+                value.contains("对") || value.contains("正确") || value == "true" || value == "t" || value == "yes"
+            };
+            let ok = judge(user) == judge(answer);
+            let score = if ok { points } else { 0.0 };
+            let feedback = if ok { "判断对了。".to_string() } else { format!("判断错了。{right_answer}") };
+            (score, if ok { "correct" } else { "wrong" }, feedback, vec![], String::new())
+        }
+        _ => {
+            let accepted: Vec<String> = answer.split('|').map(norm).filter(|s| !s.is_empty()).collect();
+            let value = norm(user);
+            let ok = !value.is_empty()
+                && accepted.iter().any(|item| *item == value || (item.len() >= 2 && value.contains(item)));
+            let score = if ok { points } else { 0.0 };
+            let feedback = if ok { "填对了。".to_string() } else { format!("填错了。{right_answer}") };
+            (score, if ok { "correct" } else { "wrong" }, feedback, vec![], String::new())
+        }
+    }
+}
+
+fn is_subjective(kind: &str) -> bool {
+    matches!(kind, "short" | "case")
+}
+
+/// 交卷：客观题本地判，主观题交模型；然后汇总成绩、写复习要点、把要点写回卡片。
+#[tauri::command]
+async fn submit_exam(state: State<'_, AppState>, exam_id: i64) -> Result<ExamPaper, String> {
+    let items = {
+        let store = state.store.lock().unwrap();
+        store.exam_items(exam_id).map_err(err_str)?
+    };
+    let cards: Vec<Card> = {
+        let store = state.store.lock().unwrap();
+        store.list_cards(None).map_err(err_str)?
+    };
+    let llm = state.llm.read().unwrap().clone();
+
+    let mut results: Vec<(i64, f64, String, String, Vec<String>, String)> = Vec::new();
+    // 主观题连参考答案一起先算好，后面并发判分时就不用再借 cards
+    let mut subjective: Vec<(store::ExamItem, String)> = Vec::new();
+    for item in &items {
+        if is_subjective(&item.kind) {
+            let card_answer = cards
+                .iter()
+                .find(|c| Some(c.id) == item.card_id)
+                .map(|c| c.answer.clone())
+                .unwrap_or_default();
+            let reference = if !item.answer.trim().is_empty() { item.answer.clone() } else { card_answer };
+            subjective.push((item.clone(), reference));
+        } else {
+            let (score, verdict, feedback, missed, suggestion) =
+                grade_objective(&item.kind, &item.answer, &item.user_answer, item.points);
+            results.push((item.id, score, verdict.to_string(), feedback, missed, suggestion));
+        }
+    }
+
+    let graded: Vec<(i64, anyhow::Result<llm::ItemGrade>)> = futures::stream::iter(subjective.into_iter())
+        .map(|(item, reference)| {
+            let llm = llm.clone();
+            async move {
+                let result = llm
+                    .grade_exam_answer(&item.stem, &reference, &item.user_answer, item.points)
+                    .await;
+                (item.id, result)
+            }
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+
+    for (id, result) in graded {
+        match result {
+            Ok(grade) => results.push((id, grade.score, grade.verdict, grade.feedback, grade.missed, grade.suggestion)),
+            Err(error) => {
+                eprintln!("[判分] 失败：{error}");
+                results.push((id, 0.0, "wrong".to_string(), format!("判分失败：{error}"), vec![], String::new()));
+            }
+        }
+    }
+
+    let mut score = 0.0;
+    let mut correct = 0i64;
+    for (id, item_score, verdict, feedback, missed, suggestion) in &results {
+        let store = state.store.lock().unwrap();
+        store
+            .grade_exam_item(*id, *item_score, verdict, feedback, missed, suggestion)
+            .map_err(err_str)?;
+        score += *item_score;
+        if verdict == "correct" {
+            correct += 1;
+        }
+    }
+
+    // 复习要点：错题与部分对题的解析汇总，同时写回卡片
+    let fresh_items = {
+        let store = state.store.lock().unwrap();
+        store.exam_items(exam_id).map_err(err_str)?
+    };
+    let mut report = String::new();
+    let mut weak = 0;
+    for item in &fresh_items {
+        if item.verdict == "correct" || item.stem.is_empty() {
+            continue;
+        }
+        weak += 1;
+        report.push_str(&format!(
+            "**{} · {} · 得分 {:.1}/{:.0}**\n\n{}\n\n- 正确答案：{}\n- 你的作答：{}\n",
+            item.seq,
+            llm::kind_label(&item.kind),
+            item.score.unwrap_or(0.0),
+            item.points,
+            item.stem,
+            item.answer,
+            if item.user_answer.trim().is_empty() { "（没答）" } else { item.user_answer.trim() }
+        ));
+        if !item.explain.trim().is_empty() {
+            report.push_str(&format!("- 解析：{}\n", item.explain.trim()));
+        }
+        if !item.suggestion.trim().is_empty() {
+            report.push_str(&format!("- 要点：{}\n", item.suggestion.trim()));
+        }
+        if !item.missed.is_empty() {
+            report.push_str(&format!("- 漏掉：{}\n", item.missed.join("；")));
+        }
+        report.push('\n');
+
+        if let Some(card_id) = item.card_id {
+            let note = if !item.suggestion.trim().is_empty() {
+                item.suggestion.trim().to_string()
+            } else if !item.explain.trim().is_empty() {
+                item.explain.trim().to_string()
+            } else {
+                item.answer.trim().to_string()
+            };
+            let note: String = note.chars().take(160).collect();
+            let store = state.store.lock().unwrap();
+            store
+                .append_card_note(card_id, &format!("{}（{} 测验）", note, crate::today().get(5..).unwrap_or("")))
+                .map_err(err_str)?;
+        }
+    }
+
+    let head = if weak == 0 {
+        "全对，没有需要重点复习的题。\n".to_string()
+    } else {
+        format!("共 {} 道题需要回看。\n\n", weak)
+    };
+    let report = format!("## 复习要点\n\n{head}{report}");
+
+    let store = state.store.lock().unwrap();
+    store.finish_exam(exam_id, score, correct, report.trim(), &now_iso()).map_err(err_str)?;
+    let exam = store.get_exam(exam_id).map_err(err_str)?.ok_or("卷子不存在")?;
+    let items = store.exam_items(exam_id).map_err(err_str)?;
+    Ok(ExamPaper { exam, items })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -740,6 +1242,13 @@ pub fn run() {
             autostart_on,
             set_autostart,
             set_notify,
+            create_exam,
+            exam_step,
+            get_exam,
+            list_exams,
+            save_exam_answer,
+            submit_exam,
+            delete_exam,
             create_plan,
             list_plans,
             delete_plan,

@@ -15,6 +15,27 @@ missed（遗漏的关键点字符串数组，没有则空数组）、\
 suggestion（2-4 句理想回答）。\
 只输出 JSON 对象，不要任何解释。";
 
+const PAPER_SYSTEM: &str = "你是命题老师。用户会给你一个知识点的标题与正文，以及要出的题型与分值。\
+请严格按用户要求的题型和数量出题，输出 JSON 数组，每个元素形如：\
+{\"kind\":\"题型（原样用用户给的英文标识）\",\
+\"stem\":\"题干\",\
+\"options\":[\"选项 A 的内容\",\"选项 B 的内容\"],\
+\"answer\":\"标准答案\",\
+\"explain\":\"解析，1-3 句，讲清为什么\",\
+\"points\":分值数字}\
+题型与写法：single 单选（4 个选项，answer 写选项字母如 B）；multi 多选（4-5 个选项，answer 写字母如 ACD）；\
+judge 判断（options 固定为 [\"正确\",\"错误\"]，answer 写 正确 或 错误）；blank 填空（options 给空数组，answer 是填空答案，多个可接受写法用 | 分隔）；\
+short 简答（options 空数组，answer 写参考答案的 3-5 个要点，用；分隔）；case 案例（options 空数组，answer 写解题要点）。\
+硬要求：只考正文里明确写过的事实，不要编造；题干必须自足，不要出现「根据材料」「上文」这类指代；\
+填空题不要给提示词位置标记以外的空；只输出 JSON 数组，不要任何解释或代码块围栏。";
+
+const GRADE_ITEM_SYSTEM: &str = "你是阅卷老师。用户会给你一道题的题干、参考答案与考生作答，请按点给分。\
+输出 JSON 对象：score（得分数字，0 到该题满分之间，可以给小数）、\
+verdict（correct 全对 / partial 部分对 / wrong 基本不对）、\
+feedback（2-4 句评语，先肯定答对的部分，再指出问题）、\
+missed（遗漏的关键点字符串数组，没有则空数组）、\
+suggestion（2-4 句理想答案）。只输出 JSON 对象。";
+
 const EXTRACT_SYSTEM: &str = "你是资料整理助手。用户会给你一段从网页或搜索结果里抓来的原始文本，\
 把它整理成干净、可直接用于学习的中文 Markdown 材料：\
 1. 完整保留原文的信息：事实、数据、步骤、代码、表格、注意事项与结论，一个都不要省；\
@@ -168,6 +189,63 @@ impl LlmClient {
         Ok(digest)
     }
 
+    /// 给一个知识点出题：一次调用出一组题（用户指定题型与分值）。
+    pub async fn make_questions(
+        &self,
+        title: &str,
+        content: &str,
+        asks: &[(String, f64)],
+    ) -> Result<Vec<PaperQuestion>> {
+        let list = asks
+            .iter()
+            .map(|(kind, points)| format!("- {}（{} 分）", kind_label(kind), points))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user = format!(
+            "知识点标题：{title}\n\n知识点正文：\n{}\n\n请按下面这些要求出 {} 道题：\n{list}",
+            crate::ingest::truncate_chars(content, 6000),
+            asks.len()
+        );
+        let messages = json!([
+            { "role": "system", "content": PAPER_SYSTEM },
+            { "role": "user", "content": user },
+        ]);
+        let raw = self.chat(messages, &self.model, 3000, 0.4).await?;
+        let json_text = extract_json(&raw, '[', ']')?;
+        let items: Vec<PaperQuestion> = serde_json::from_str(&json_text)
+            .map_err(|e| anyhow!("出题 JSON 解析失败：{e}"))?;
+        Ok(items)
+    }
+
+    /// 主观题判分（客观题在本地判，不用模型）。
+    pub async fn grade_exam_answer(
+        &self,
+        stem: &str,
+        reference: &str,
+        user_answer: &str,
+        points: f64,
+    ) -> Result<ItemGrade> {
+        let user = format!(
+            "题干：{stem}\n\n参考答案：{reference}\n\n本题满分：{points}\n\n考生作答：\n{user_answer}"
+        );
+        let messages = json!([
+            { "role": "system", "content": GRADE_ITEM_SYSTEM },
+            { "role": "user", "content": user },
+        ]);
+        let raw = self.chat(messages, &self.model, 1500, 0.2).await?;
+        let json_text = extract_json(&raw, '{', '}')?;
+        let mut grade: ItemGrade = serde_json::from_str(&json_text)
+            .map_err(|e| anyhow!("判分 JSON 解析失败：{e}"))?;
+        grade.score = grade.score.clamp(0.0, points);
+        grade.verdict = match grade.verdict.as_str() {
+            "correct" | "partial" | "wrong" => grade.verdict.clone(),
+            _ if grade.score >= points * 0.99 => "correct".to_string(),
+            _ if grade.score <= 0.0 => "wrong".to_string(),
+            _ => "partial".to_string(),
+        };
+        Ok(grade)
+    }
+
     /// 把抓来的原始文本整理成干净材料（智能导入的默认路径）。返回 Markdown 正文。
     pub async fn extract_material(&self, origin: &str, section_hint: &str, raw: &str) -> Result<String> {
         let user = format!(
@@ -199,6 +277,51 @@ impl LlmClient {
         result.score = result.score.clamp(0.0, 10.0);
         Ok(result)
     }
+}
+
+/// 题型的展示名，出题提示词与界面共用。
+pub fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "single" => "单选题",
+        "multi" => "多选题",
+        "judge" => "判断题",
+        "blank" => "填空题",
+        "short" => "简答题",
+        "case" => "案例题",
+        _ => "题目",
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperQuestion {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub stem: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub answer: String,
+    #[serde(default)]
+    pub explain: String,
+    #[serde(default)]
+    pub points: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemGrade {
+    #[serde(default)]
+    pub score: f64,
+    #[serde(default)]
+    pub verdict: String,
+    #[serde(default)]
+    pub feedback: String,
+    #[serde(default)]
+    pub missed: Vec<String>,
+    #[serde(default)]
+    pub suggestion: String,
 }
 
 /// 从模型输出里截出 JSON（容忍代码块围栏与前后解释）。

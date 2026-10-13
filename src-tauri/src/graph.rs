@@ -519,7 +519,7 @@ mod tests {
             summary: String::new(), key_points: vec![],
             question: String::new(), answer: String::new(), tags: vec![],
             state: 0, stability: 3.0, difficulty: 5.0, reps, lapses: 0,
-            last_review: None, due: due.into(), learned,
+            last_review: None, due: due.into(), learned, exam_notes: vec![],
         }
     }
 

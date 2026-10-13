@@ -26,7 +26,7 @@ const state = {
 };
 
 const VIEW_TITLES = {
-  today: '开始', import: '材料', learn: '学习', exam: '考试', insight: '看板', settings: '设置',
+  today: '开始', import: '材料', learn: '学习', exam: '练习', quiz: '测验', insight: '看板', settings: '设置',
 };
 
 const el = (id) => document.getElementById(id);
@@ -76,6 +76,7 @@ function switchView(name) {
   });
   el('viewTitle').textContent = VIEW_TITLES[name] || name;
   if (name === 'insight') renderGraph();
+  if (name === 'quiz') renderQuiz().catch((error) => toast('测验页加载失败：' + String(error), 'bad'));
   if (name === 'import') renderMaterials();
   if (name === 'learn') renderLearn();
   if (name === 'settings') loadSettings().catch(() => {});
@@ -89,17 +90,20 @@ async function refresh() {
     call('today_queue'),
     call('list_materials'),
     call('recent_reviews', { limit: 8 }),
+    call('list_exams'),
   ]);
   state.info = results[0];
   state.queue = results[1];
   state.materials = results[2];
   state.recent = results[3];
+  state.exams = results[4];
   state.cards = state.queue.fresh.concat(state.queue.due);
   renderChrome();
   renderToday();
   renderMaterials();
   renderPlans();
   renderLearn();
+  if (state.view === 'quiz') renderQuiz().catch(() => {});
 }
 
 /* 今日待办 = 计划今天该学还没学的 + 到期还没复习的 */
@@ -674,6 +678,13 @@ function renderLearn() {
       escapeHtml(current.question) + '</p></div>'
     : '<div class="unit-question"><div class="grade-sub">读完自测</div><p class="block-note">' +
       '这一节的考点还在生成中，稍后刷新即可。</p></div>';
+  // 测验答错/答漏的要点，交卷时写回卡上
+  const quizNotes = (current.examNotes || []).length
+    ? '<div class="unit-points unit-notes"><div class="grade-sub">测验里错过的点</div>' +
+      '<ul class="grade-list">' +
+      current.examNotes.map((note) => '<li>' + escapeHtml(note) + '</li>').join('') +
+      '</ul></div>'
+    : '';
 
   el('learnCard').innerHTML =
     '<div class="card-meta">' + escapeHtml(current.section || '') + ' · ' +
@@ -681,9 +692,9 @@ function renderLearn() {
     '<h3 class="card-title">' + escapeHtml(current.title) + '</h3>' +
     '<div class="unit-body">' +
       renderMarkdown(stripLeadTitle(current.content || current.summary, current.title)) + '</div>' +
-    points + quiz +
+    points + quizNotes + quiz +
     '<div class="card-actions">' +
-    '<button class="btn btn-primary" data-action="learn-to-exam" data-id="' + current.id + '">学完去考试</button>' +
+    '<button class="btn btn-primary" data-action="learn-to-exam" data-id="' + current.id + '">学完去练习</button>' +
     '<button class="btn" data-action="learn-next">下一个单元</button></div>';
 
   renderFlowcharts(el('learnCard'));
@@ -704,6 +715,10 @@ async function loadExamCard(cardId, mode) {
   el('examHeading').textContent = card.title;
   el('examSource').textContent = card.materialTitle + ' · 到期 ' + card.due + ' · 已复习 ' + card.reps + ' 次';
   el('examQuestion').textContent = card.question || '（这张卡没有题目，可先学一遍再自评）';
+  el('examNotesPanel').innerHTML = (card.examNotes || []).length
+    ? '<div class="unit-notes"><div class="grade-sub">测验里错过的点</div><ul class="grade-list">' +
+      card.examNotes.map((note) => '<li>' + escapeHtml(note) + '</li>').join('') + '</ul></div>'
+    : '';
   el('examAnswer').value = '';
   el('gradeBlock').hidden = true;
   switchView('exam');
@@ -741,6 +756,366 @@ async function submitSelfRating(rating) {
   toast('自评已记录，下次复习 ' + updated.due, 'ok');
   el('selfNote').textContent = '下次复习：' + updated.due;
   await refresh();
+}
+
+
+/* ── 测验：出卷 / 答题 / 判分 / 复习要点 ───── */
+
+const QUIZ_KINDS = [
+  ['single', '单选题', 2],
+  ['judge', '判断题', 1],
+  ['blank', '填空题', 2],
+  ['multi', '多选题', 3],
+  ['short', '简答题', 5],
+  ['case', '案例题', 8],
+];
+
+const QUIZ_PRESETS = {
+  10: { single: 3, judge: 1, blank: 2, multi: 2, short: 1, case: 1 },
+  20: { single: 6, judge: 3, blank: 4, multi: 3, short: 3, case: 1 },
+  30: { single: 9, judge: 4, blank: 6, multi: 5, short: 4, case: 2 },
+  50: { single: 15, judge: 7, blank: 10, multi: 8, short: 7, case: 3 },
+};
+
+function quizState() {
+  if (!state.quiz) {
+    state.quiz = {
+      exam: null,
+      items: [],
+      index: 0,
+      answers: {},
+      view: 'setup',
+      strategy: 'all',
+      materialId: null,
+      total: 20,
+      counts: Object.assign({}, QUIZ_PRESETS[20]),
+      progress: '',
+      busy: false,
+    };
+  }
+  return state.quiz;
+}
+
+function quizTotal() {
+  const quiz = quizState();
+  return QUIZ_KINDS.reduce((sum, item) => sum + (quiz.counts[item[0]] || 0), 0);
+}
+
+async function renderQuiz() {
+  const quiz = quizState();
+  if (quiz.exam) {
+    const paper = await call('get_exam', { examId: quiz.exam.id });
+    quiz.exam = paper.exam;
+    quiz.items = paper.items;
+  }
+  renderQuizMain();
+  renderQuizSide();
+  renderQuizHistory();
+}
+
+function renderQuizMain() {
+  const quiz = quizState();
+  const box = el('quizMain');
+  if (quiz.view === 'paper') { box.innerHTML = quizPaperHTML(); bindQuizPaper(); return; }
+  if (quiz.view === 'result') { box.innerHTML = quizResultHTML(); return; }
+  box.innerHTML = quizSetupHTML();
+  bindQuizSetup();
+}
+
+function quizSetupHTML() {
+  const quiz = quizState();
+  const options = (state.materials || []).map((material) =>
+    '<option value="' + material.id + '"' +
+    (quiz.materialId === material.id ? ' selected' : '') + '>' +
+    escapeHtml(material.title) + '（' + material.cardCount + ' 单元）</option>').join('');
+  const strategies = [['all', '全部单元'], ['learned', '只考学过的'], ['weak', '薄弱优先']]
+    .map(([value, label]) => '<button class="seg-item' + (quiz.strategy === value ? ' is-active' : '') +
+      '" data-strategy="' + value + '">' + label + '</button>').join('');
+  const kinds = QUIZ_KINDS.map(([key, label]) => {
+    const count = quiz.counts[key] || 0;
+    return '<div class="kind-row' + (count ? ' is-on' : '') + '">' +
+      '<span class="kind-name">' + label + '</span>' +
+      '<span class="kind-step">' +
+      '<button data-kind-step="' + key + '" data-delta="-1">−</button>' +
+      '<span class="kind-count">' + count + '</span>' +
+      '<button data-kind-step="' + key + '" data-delta="1">+</button>' +
+      '</span></div>';
+  }).join('');
+
+  return '<div class="block">' +
+    '<div class="block-head"><h2>出一份卷子</h2>' +
+    '<span class="block-hint">按知识点出题，客观题本地判分，简答与案例交模型按点给分</span></div>' +
+    '<label class="field"><span class="field-label">素材库</span>' +
+    '<select id="quizMaterial"><option value="">全部素材库</option>' + options + '</select></label>' +
+    '<div class="field"><span class="field-label">抽题范围</span>' +
+    '<div class="seg" id="quizStrategy">' + strategies + '</div></div>' +
+    '<div class="field"><span class="field-label">题量</span>' +
+    '<div class="seg" id="quizTotal">' + [10, 20, 30, 50].map((n) =>
+      '<button class="seg-item' + (quiz.total === n ? ' is-active' : '') + '" data-total="' + n + '">' + n + ' 题</button>').join('') +
+    '</div></div>' +
+    '<div class="field"><span class="field-label">题型（每种题的分值固定：单选 2 / 判断 1 / 填空 2 / 多选 3 / 简答 5 / 案例 8）</span>' +
+    '<div class="kind-grid" id="quizKinds">' + kinds + '</div></div>' +
+    '<div class="field-row field-row-end">' +
+    '<span class="kbd-hint">当前 ' + quizTotal() + ' 题 · 满分 ' + quizFullScore() + ' 分</span>' +
+    '<button class="btn btn-primary" id="quizCreateBtn">开始出卷</button></div>' +
+    (quiz.progress ? '<div class="result">' + escapeHtml(quiz.progress) + '</div>' : '') +
+    '</div>';
+}
+
+function quizFullScore() {
+  const quiz = quizState();
+  return QUIZ_KINDS.reduce((sum, [key, , points]) => sum + (quiz.counts[key] || 0) * points, 0);
+}
+
+function bindQuizSetup() {
+  const quiz = quizState();
+  el('quizMaterial').addEventListener('change', (event) => {
+    quiz.materialId = Number(event.target.value) || null;
+  });
+  el('quizStrategy').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-strategy]');
+    if (!button) return;
+    quiz.strategy = button.dataset.strategy;
+    renderQuizMain();
+  });
+  el('quizTotal').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-total]');
+    if (!button) return;
+    quiz.total = Number(button.dataset.total);
+    quiz.counts = Object.assign({}, QUIZ_PRESETS[quiz.total]);
+    renderQuizMain();
+  });
+  el('quizKinds').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-kind-step]');
+    if (!button) return;
+    const key = button.dataset.kindStep;
+    const delta = Number(button.dataset.delta);
+    quiz.counts[key] = Math.max(0, Math.min(60, (quiz.counts[key] || 0) + delta));
+    renderQuizMain();
+  });
+  el('quizCreateBtn').addEventListener('click', (event) => withBusy(event.currentTarget, '出卷中', () => createExam()));
+}
+
+async function createExam() {
+  const quiz = quizState();
+  const plan = QUIZ_KINDS
+    .filter(([key]) => (quiz.counts[key] || 0) > 0)
+    .map(([key]) => ({ kind: key, count: quiz.counts[key] }));
+  if (!plan.length) { toast('至少选一种题型', 'bad'); return; }
+  quiz.busy = true;
+  try {
+    const out = await call('create_exam', {
+      materialId: quiz.materialId,
+      strategy: quiz.strategy,
+      plan: plan,
+    });
+    quiz.exam = { id: out.examId, title: '', total: out.total, fullScore: out.fullScore, status: 'draft' };
+    quiz.progress = '已排好 ' + out.total + ' 道题（覆盖 ' + out.cards + ' 个知识点），正在出题…';
+    renderQuizMain();
+    await examSteps(out.examId);
+    quiz.view = 'paper';
+    quiz.index = 0;
+    toast('卷子出好了，开始答题', 'ok');
+    await renderQuiz();
+  } catch (error) {
+    toast('出卷失败：' + String(error), 'bad');
+    quiz.progress = '出卷失败：' + String(error);
+    renderQuizMain();
+  } finally {
+    quiz.busy = false;
+  }
+}
+
+async function examSteps(examId) {
+  const quiz = quizState();
+  let last = -1;
+  for (;;) {
+    const step = await call('exam_step', { examId: examId, batch: 4 });
+    quiz.progress = '正在出题 ' + step.made + '/' + (step.made + step.remaining) + '…';
+    renderQuizMain();
+    if (step.error) { toast('出题中断：' + step.error, 'bad'); }
+    if (step.done || step.remaining === 0) break;
+    // 这一批没出成任何题就停下，别一直重试同一个错误
+    if (step.made <= last) break;
+    last = step.made;
+  }
+}
+
+function quizPaperHTML() {
+  const quiz = quizState();
+  const item = quiz.items[quiz.index];
+  if (!item) return '<div class="block"><div class="empty">这张卷子还没有题目。</div></div>';
+  const answer = quiz.answers[item.id] || item.userAnswer || '';
+  const label = kindLabel(item.kind);
+
+  let body = '';
+  if (item.kind === 'single' || item.kind === 'judge' || item.kind === 'multi') {
+    const multiple = item.kind === 'multi';
+    const byText = item.kind === 'judge';
+    body = '<div class="quiz-options">' + item.options.map((text, index) => {
+      const key = String.fromCharCode(65 + index);
+      const value = byText ? text : key;
+      const picked = multiple ? answer.includes(key) : (byText ? answer === text : answer === key);
+      return '<label class="quiz-option' + (picked ? ' is-picked' : '') + '">' +
+        '<input type="' + (multiple ? 'checkbox' : 'radio') + '" name="q' + item.id + '" value="' + escapeHtml(value) + '"' +
+        (picked ? ' checked' : '') + ' data-answer="' + item.id + '" />' +
+        '<span>' + (byText ? '' : '<span class="quiz-option-key">' + key + '.</span> ') + escapeHtml(text) + '</span></label>';
+    }).join('') + '</div>';
+  } else if (item.kind === 'blank') {
+    body = '<label class="field"><span class="field-label">你的答案</span>' +
+      '<input type="text" data-answer="' + item.id + '" value="' + escapeHtml(answer) + '" placeholder="填入答案" /></label>';
+  } else {
+    body = '<label class="field"><span class="field-label">你的作答</span>' +
+      '<textarea rows="8" data-answer="' + item.id + '" placeholder="写出关键机制、取舍与结论">' +
+      escapeHtml(answer) + '</textarea></label>';
+  }
+
+  return '<div class="block">' +
+    '<div class="quiz-head">' +
+    '<div><span class="quiz-kind">' + label + '</span>' +
+    '<span class="quiz-seq">' + item.seq + ' / ' + quiz.items.length + ' · ' + item.points + ' 分</span></div>' +
+    '<span class="block-hint">' + escapeHtml(item.cardTitle || '') + '</span></div>' +
+    '<p class="quiz-stem">' + escapeHtml(item.stem) + '</p>' +
+    body +
+    '<div class="quiz-actions">' +
+    '<button class="btn" data-quiz-nav="prev">上一题</button>' +
+    '<button class="btn" data-quiz-nav="next">下一题</button>' +
+    '<span class="spacer"></span>' +
+    '<button class="btn btn-primary" id="quizSubmitBtn">交卷并判分</button>' +
+    '</div></div>';
+}
+
+function bindQuizPaper() {
+  const quiz = quizState();
+  const item = quiz.items[quiz.index];
+  el('quizMain').querySelectorAll('[data-answer]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const id = Number(input.dataset.answer);
+      const current = quiz.items.find((entry) => entry.id === id);
+      if (current && current.kind === 'multi') {
+        const picked = Array.from(el('quizMain').querySelectorAll('[data-answer="' + id + '"]:checked'))
+          .map((node) => node.value).sort().join('');
+        quiz.answers[id] = picked;
+      } else {
+        quiz.answers[id] = input.value;
+      }
+      call('save_exam_answer', { itemId: id, answer: quiz.answers[id] }).catch(() => {});
+      renderQuizSide();
+    });
+  });
+  el('quizMain').querySelectorAll('[data-quiz-nav]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const delta = button.dataset.quizNav === 'next' ? 1 : -1;
+      quiz.index = Math.min(quiz.items.length - 1, Math.max(0, quiz.index + delta));
+      renderQuizMain();
+      renderQuizSide();
+    });
+  });
+  el('quizSubmitBtn').addEventListener('click', (event) =>
+    withBusy(event.currentTarget, '判分中', () => submitExam()));
+}
+
+async function submitExam() {
+  const quiz = quizState();
+  const paper = await call('submit_exam', { examId: quiz.exam.id });
+  quiz.exam = paper.exam;
+  quiz.items = paper.items;
+  quiz.view = 'result';
+  toast('已判分：' + (paper.exam.score || 0) + ' / ' + paper.exam.fullScore + ' 分', 'ok');
+  await renderQuiz();
+  await refresh();
+}
+
+function renderQuizSide() {
+  const quiz = quizState();
+  const side = el('quizSide');
+  if (quiz.view === 'setup' || !quiz.items.length) {
+    side.innerHTML = '<div class="block"><div class="block-head"><h2>怎么用</h2></div>' +
+      '<div class="block-note">选好范围与题型后出卷：客观题（单选 / 多选 / 判断 / 填空）本地判分，' +
+      '简答和案例交模型按点给分。交卷后会生成复习要点，并把要点写回对应知识点。</div></div>';
+    return;
+  }
+  const answers = quiz.answers;
+  const nav = quiz.items.map((item, index) => {
+    const answered = (answers[item.id] || item.userAnswer || '').trim() !== '';
+    const done = quiz.view === 'result';
+    const cls = ['quiz-nav-item'];
+    if (done) cls.push(item.verdict === 'correct' ? 'is-right' : 'is-wrong');
+    else if (index === quiz.index) cls.push('is-current');
+    else if (answered) cls.push('is-answered');
+    return '<button class="' + cls.join(' ') + '" data-quiz-jump="' + index + '">' + item.seq + '</button>';
+  }).join('');
+  const answeredCount = quiz.items.filter((item) => (answers[item.id] || item.userAnswer || '').trim() !== '').length;
+  side.innerHTML = '<div class="block">' +
+    '<div class="block-head"><h2>题号</h2><span class="block-hint">已答 ' + answeredCount + '/' + quiz.items.length + '</span></div>' +
+    '<div class="quiz-nav">' + nav + '</div>' +
+    '<div class="quiz-legend"><span>· 实心 = 当前题</span><span>· 描边 = 已作答</span>' +
+    (quiz.view === 'result' ? '<span>· 绿 = 答对，红 = 答错</span>' : '') + '</div>' +
+    '</div>';
+  side.querySelectorAll('[data-quiz-jump]').forEach((button) => {
+    button.addEventListener('click', () => {
+      quiz.index = Number(button.dataset.quizJump);
+      renderQuizMain();
+      renderQuizSide();
+    });
+  });
+}
+
+function renderQuizHistory() {
+  const list = el('quizHistoryList');
+  if (!list) return;
+  const exams = state.exams || [];
+  el('quizHistoryHint').textContent = exams.length ? exams.length + ' 次' : '';
+  list.innerHTML = exams.length
+    ? exams.map((exam) => '<div class="row" data-quiz-open="' + exam.id + '">' +
+        '<div class="row-main"><div class="row-title">' + escapeHtml(exam.title) + '</div>' +
+        '<div class="row-sub">' + escapeHtml(exam.createdAt.slice(0, 16).replace('T', ' ')) +
+        ' · ' + exam.made + '/' + exam.total + ' 题' +
+        (exam.status === 'done' ? '' : ' · 未交卷') + '</div></div>' +
+        '<div class="row-side">' + (exam.score == null ? '—' : exam.score + ' / ' + exam.fullScore) + '</div>' +
+        '<button class="btn btn-slim" data-quiz-del="' + exam.id + '">删除</button></div>').join('')
+    : '<div class="empty">还没有测验记录。出第一份卷子试试。</div>';
+}
+
+function kindLabel(kind) {
+  const hit = QUIZ_KINDS.find(([key]) => key === kind);
+  return hit ? hit[1] : '题目';
+}
+
+function quizResultHTML() {
+  const quiz = quizState();
+  const exam = quiz.exam || {};
+  const items = quiz.items;
+  const right = items.filter((item) => item.verdict === 'correct').length;
+  const rows = items.map((item) => {
+    const okClass = item.verdict === 'correct' ? '' : (item.verdict === 'partial' ? ' is-partial' : '');
+    const mine = (item.userAnswer || '').trim();
+    return '<div class="quiz-review-item' + okClass + '">' +
+      '<h4>' + item.seq + '. ' + kindLabel(item.kind) + ' · 得分 ' +
+      (item.score == null ? 0 : item.score) + '/' + item.points +
+      (item.verdict === 'correct' ? ' · 正确' : item.verdict === 'partial' ? ' · 部分正确' : ' · 错误') + '</h4>' +
+      '<div class="line">' + escapeHtml(item.stem) + '</div>' +
+      '<div class="line">正确答案：' + escapeHtml(item.answer || '—') + '</div>' +
+      '<div class="line">你的作答：' + escapeHtml(mine || '（没答）') + '</div>' +
+      (item.explain ? '<div class="line">解析：' + escapeHtml(item.explain) + '</div>' : '') +
+      (item.feedback ? '<div class="line">评语：' + escapeHtml(item.feedback) + '</div>' : '') +
+      (item.suggestion ? '<div class="line">要点：' + escapeHtml(item.suggestion) + '</div>' : '') +
+      '</div>';
+  }).join('');
+
+  return '<div class="block">' +
+    '<div class="block-head"><h2>成绩</h2><span class="block-hint">' + escapeHtml(exam.title || '') + '</span></div>' +
+    '<div class="score-big"><span class="num">' + (exam.score == null ? 0 : exam.score) + '</span>' +
+    '<span class="of">/ ' + (exam.fullScore || 0) + ' 分 · 全对 ' + right + '/' + items.length + ' 题</span></div>' +
+    '<div class="field-row" style="margin-top:16px">' +
+    '<button class="btn btn-primary" data-quiz-again="1">再出一份</button>' +
+    '<button class="btn" data-quiz-review="1">回看题目</button>' +
+    '</div></div>' +
+    '<div class="block quiz-report"><div class="block-head"><h2>复习要点</h2>' +
+    '<span class="block-hint">已写回对应知识点，学习时能看到</span></div>' +
+    (exam.report ? renderMarkdown(exam.report) : '<div class="empty">没有需要重点复习的题。</div>') +
+    '</div>' +
+    '<div class="block"><div class="block-head"><h2>逐题回顾</h2></div>' + rows + '</div>';
 }
 
 /* ── 看板（阶段指导 / 知识地图 / 复习计划）─── */
@@ -881,6 +1256,40 @@ function bind() {
     const action = event.target.closest('[data-action]');
     const graphTab = event.target.closest('[data-graph]');
 
+    const quizDel = event.target.closest('[data-quiz-del]');
+    if (quizDel) {
+      event.stopPropagation();
+      if (!confirm('删除这次测验记录？')) return;
+      await call('delete_exam', { examId: Number(quizDel.dataset.quizDel) });
+      toast('已删除', 'ok');
+      await refresh();
+      return;
+    }
+    const quizOpen = event.target.closest('[data-quiz-open]');
+    if (quizOpen) {
+      const quiz = quizState();
+      quiz.exam = { id: Number(quizOpen.dataset.quizOpen) };
+      quiz.view = 'result';
+      await renderQuiz();
+      return;
+    }
+    if (event.target.closest('[data-quiz-again]')) {
+      const quiz = quizState();
+      quiz.exam = null;
+      quiz.items = [];
+      quiz.answers = {};
+      quiz.view = 'setup';
+      quiz.progress = '';
+      renderQuizMain();
+      renderQuizSide();
+      return;
+    }
+    if (event.target.closest('[data-quiz-review]')) {
+      quizState().view = 'paper';
+      renderQuizMain();
+      renderQuizSide();
+      return;
+    }
     const learnTodo = event.target.closest('[data-learn-id]');
     if (learnTodo) {
       await openLearnUnit(Number(learnTodo.dataset.learnId));
