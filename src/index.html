@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>致知</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <img class="brand-mark" src="mark.svg" alt="" />
+        <div class="brand-text">
+          <span class="brand-name">致知</span>
+          <span class="brand-sub">读进去，记得住</span>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item is-active" data-view="today">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7" /></svg>
+          <span>开始</span>
+        </button>
+        <button class="nav-item" data-view="learn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z" /></svg>
+          <span>学习</span>
+        </button>
+        <button class="nav-item" data-view="exam">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6M9 13h4" /></svg>
+          <span>考试</span>
+        </button>
+        <button class="nav-item" data-view="insight">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15l3-4 3 3 4-6" /></svg>
+          <span>指导图</span>
+        </button>
+        <button class="nav-item" data-view="import">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v10M8 11l4 4 4-4M5 19h14" /></svg>
+          <span>材料</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" /><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2 2 2 0 11-4 0 1.7 1.7 0 00-2.9-1.2l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 15a2 2 0 010-4 1.7 1.7 0 001.2-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 4.6a2 2 0 014 0 1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 11a2 2 0 010 4z" /></svg>
+          <span>设置</span>
+        </button>
+      </nav>
+
+      <div class="rail-foot">
+        <div class="rail-stat">
+          <span class="rail-stat-value" id="railDue">0</span>
+          <span class="rail-stat-label">今日到期</span>
+        </div>
+        <div class="rail-stat">
+          <span class="rail-stat-value" id="railStreak">0</span>
+          <span class="rail-stat-label">连续天数</span>
+        </div>
+        <div class="rail-model" id="railModel">连接中</div>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <header class="topbar">
+        <h1 class="view-title" id="viewTitle">开始</h1>
+        <div class="topbar-meta" id="topMetrics"></div>
+      </header>
+
+      <!-- 今日 -->
+      <section class="view is-active" data-view="today">
+        <div class="grid-today">
+          <div class="col-main">
+            <div class="block" id="planBlock"></div>
+            <div class="block" id="todayFocus"></div>
+            <div class="block">
+              <div class="block-head">
+                <h2>今天到期</h2>
+                <span class="block-hint" id="dueHint"></span>
+              </div>
+              <div class="list" id="dueList"></div>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="block">
+              <div class="block-head"><h2>学习阶段</h2></div>
+              <div id="stagePanel"></div>
+            </div>
+            <div class="block">
+              <div class="block-head"><h2>最近练习</h2></div>
+              <div class="list list-compact" id="recentList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 材料 -->
+      <section class="view" data-view="import">
+        <div class="grid-import">
+          <div class="block">
+            <div class="block-head">
+              <h2>导入新材料</h2>
+              <span class="block-hint">网页链接、PDF、Word、Markdown、纯文本均可</span>
+            </div>
+
+            <label class="field">
+              <span class="field-label">链接或主题</span>
+              <div class="field-row">
+                <input id="urlInput" type="text"
+                       placeholder="粘贴文章链接，或直接写想学的主题，例如：RAG 分块策略" />
+                <button class="btn btn-primary" id="urlBtn">智能导入</button>
+              </div>
+              <span class="field-hint">默认交给模型整理内容：链接会先跟随跳转抓取，打不开就自动改用搜索；模型不可用时退回本地解析。</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">本地文件</span>
+              <div class="dropzone" id="dropzone">
+                <input type="file" id="fileInput" hidden
+                       accept=".pdf,.docx,.md,.markdown,.txt" />
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M8 8l4-4 4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
+                <span class="dropzone-title">把文件拖到这里，或点击选择</span>
+                <span class="dropzone-sub">PDF、Word、Markdown、纯文本都行</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">直接粘贴文本</span>
+              <textarea id="textInput" rows="5" placeholder="把课程讲义、笔记或文章正文粘贴进来"></textarea>
+              <div class="field-row field-row-end">
+                <input id="textTitle" class="input-slim" type="text" placeholder="材料标题（可留空）" />
+                <button class="btn" id="textBtn">用这段文本</button>
+              </div>
+            </label>
+
+
+          </div>
+
+          <div class="block">
+            <div class="block-head">
+              <h2>材料库</h2>
+              <span class="block-hint" id="materialHint"></span>
+            </div>
+            <div class="list" id="materialList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 学习 -->
+      <section class="view" data-view="learn">
+        <div class="grid-study">
+          <aside class="study-side">
+            <div class="block-head"><h2>学习单元</h2></div>
+            <div class="study-tools">
+              <label class="tool-field">
+                <span class="tool-label">素材库</span>
+                <span class="select-wrap">
+                  <svg class="select-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z" /></svg>
+                  <select id="learnMaterial" title="切换素材库"></select>
+                  <svg class="select-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                </span>
+              </label>
+              <label class="tool-field">
+                <span class="tool-label">搜索</span>
+                <span class="search-wrap">
+                  <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5L21 21" /></svg>
+                  <input id="learnSearch" type="text" placeholder="搜索单元标题" />
+                </span>
+              </label>
+            </div>
+            <div class="list list-compact" id="learnQueue"></div>
+          </aside>
+          <div class="block study-card" id="learnCard"></div>
+        </div>
+      </section>
+
+      <!-- 考试 -->
+      <section class="view" data-view="exam">
+        <div class="grid-exam">
+          <div class="block">
+            <div class="block-head">
+              <h2 id="examHeading">题目</h2>
+              <span class="block-hint" id="examSource"></span>
+            </div>
+            <p class="exam-question" id="examQuestion">点击右侧「开始一道题」</p>
+            <label class="field">
+              <span class="field-label">你的回答</span>
+              <textarea id="examAnswer" rows="9" placeholder="用自己的话作答，讲清机制、取舍与实践"></textarea>
+            </label>
+            <div class="field-row field-row-end">
+              <span class="kbd-hint">Ctrl + Enter 提交</span>
+              <button class="btn btn-primary" id="gradeBtn">提交并评判</button>
+            </div>
+          </div>
+          <div class="col-side">
+            <div class="block">
+              <div class="block-head"><h2>自评复习</h2></div>
+              <p class="block-note" id="selfNote">答完题由模型评分并自动排期；也可直接自评四档。</p>
+              <div class="rate-grid" id="rateGrid">
+                <button class="btn btn-rate" data-rating="1">忘记</button>
+                <button class="btn btn-rate" data-rating="2">有点难</button>
+                <button class="btn btn-rate" data-rating="3">记得</button>
+                <button class="btn btn-rate" data-rating="4">太简单</button>
+              </div>
+            </div>
+            <div class="block" id="gradeBlock" hidden>
+              <div class="block-head"><h2>评判结果</h2><span class="score-pill" id="scorePill"></span></div>
+              <div id="gradeBody"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="view" data-view="settings">
+        <div class="grid-settings">
+          <div class="col-main">
+            <div class="block">
+              <div class="block-head">
+                <h2>模型接口</h2>
+                <button class="btn btn-slim" id="testLlmBtn">测试连接</button>
+              </div>
+              <label class="field">
+                <span class="field-label">API 地址</span>
+                <input id="sApiBase" type="text" placeholder="https://api.deepseek.com/v1" />
+              </label>
+              <label class="field">
+                <span class="field-label">API Key</span>
+                <div class="input-wrap">
+                  <input id="sApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+                  <button class="reveal-btn" type="button" data-reveal="sApiKey">显示</button>
+                </div>
+              </label>
+              <label class="field">
+                <span class="field-label">模型名</span>
+                <input id="sModel" type="text" placeholder="deepseek-chat" />
+              </label>
+
+              <div class="result" id="llmResult" hidden></div>
+            </div>
+          </div>
+
+          <div class="col-side">
+            <div class="block">
+              <div class="block-head">
+                <h2>网络代理</h2>
+                <button class="btn btn-slim" id="detectBtn">检测代理</button>
+              </div>
+              <div class="result" id="proxyResult">点「检测代理」，看看系统里有没有可用的代理。</div>
+
+              <div class="field" style="margin-top: 16px">
+                <span class="field-label">代理模式</span>
+                <div class="seg" id="proxyMode">
+                  <button class="seg-item" data-mode="auto">自动</button>
+                  <button class="seg-item" data-mode="manual">手动</button>
+                  <button class="seg-item" data-mode="off">不用代理</button>
+                </div>
+              </div>
+              <label class="field">
+                <span class="field-label">代理地址</span>
+                <div class="field-row">
+                  <input id="sProxyUrl" type="text" placeholder="http://127.0.0.1:10809" />
+                  <button class="btn btn-slim" id="testProxyBtn">测试</button>
+                </div>
+              </label>
+              <label class="field">
+                <span class="field-label">不走代理的域名</span>
+                <input id="sNoProxy" type="text" placeholder="localhost, 127.0.0.1, .internal" />
+              </label>
+              <div class="result" id="proxyTestResult" hidden></div>
+            </div>
+
+            <div class="block">
+              <div class="block-head"><h2>启动</h2></div>
+              <div class="field">
+                <span class="field-label">开机自启</span>
+                <div class="seg" id="autostartSeg">
+                  <button class="seg-item" data-auto="on">开启</button>
+                  <button class="seg-item" data-auto="off">关闭</button>
+                </div>
+                <span class="field-hint">登录 Windows 后自动打开致知。改动立即生效，不用点保存。</span>
+              </div>
+            </div>
+
+            <div class="block">
+              <div class="block-head"><h2>数据位置</h2></div>
+              <div class="block-note" id="dataDir">读取中</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="save-bar">
+          <button class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
+          <span class="save-hint" id="saveHint">保存后立刻生效，不需要重启</span>
+        </div>
+      </section>
+
+      <!-- 指导图 -->
+      <section class="view" data-view="insight">
+        <div class="block">
+          <div class="block-head">
+            <h2>学习指导图</h2>
+            <div class="tabs" id="graphTabs">
+              <button class="tab is-active" data-graph="stage">阶段指导</button>
+              <button class="tab" data-graph="knowledge">知识地图</button>
+              <button class="tab" data-graph="plan">复习计划</button>
+              <button class="btn btn-slim" id="exportBtn">导出 SVG</button>
+            </div>
+          </div>
+          <div class="canvas" id="graphCanvas"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
