@@ -32,7 +32,7 @@
         </button>
         <button class="nav-item" data-view="insight">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15l3-4 3 3 4-6" /></svg>
-          <span>指导图</span>
+          <span>看板</span>
         </button>
         <button class="nav-item" data-view="import">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v10M8 11l4 4 4-4M5 19h14" /></svg>
@@ -47,7 +47,7 @@
       <div class="rail-foot">
         <div class="rail-stat">
           <span class="rail-stat-value" id="railDue">0</span>
-          <span class="rail-stat-label">今日到期</span>
+          <span class="rail-stat-label">今日待办</span>
         </div>
         <div class="rail-stat">
           <span class="rail-stat-value" id="railStreak">0</span>
@@ -69,18 +69,21 @@
           <div class="col-main">
             <div class="block" id="planBlock"></div>
             <div class="block" id="todayFocus"></div>
+          </div>
+          <div class="col-side">
             <div class="block">
               <div class="block-head">
-                <h2>今天到期</h2>
+                <h2>今天要做</h2>
                 <span class="block-hint" id="dueHint"></span>
               </div>
               <div class="list" id="dueList"></div>
             </div>
-          </div>
-          <div class="col-side">
             <div class="block">
-              <div class="block-head"><h2>学习阶段</h2></div>
-              <div id="stagePanel"></div>
+              <div class="block-head">
+                <h2>复习节奏</h2>
+                <span class="block-hint" id="rhythmHint"></span>
+              </div>
+              <div class="rhythm" id="rhythmPanel"></div>
             </div>
             <div class="block">
               <div class="block-head"><h2>最近练习</h2></div>
@@ -234,6 +237,23 @@
 
               <div class="result" id="llmResult" hidden></div>
             </div>
+
+            <div class="block">
+              <div class="block-head"><h2>数据位置</h2></div>
+              <div class="block-note" id="dataDir">读取中</div>
+            </div>
+
+            <div class="block">
+              <div class="block-head"><h2>学习提醒</h2></div>
+              <div class="field">
+                <span class="field-label">系统通知</span>
+                <div class="seg" id="notifySeg">
+                  <button class="seg-item" data-notify="on">开启</button>
+                  <button class="seg-item" data-notify="off">关闭</button>
+                </div>
+                <span class="field-hint">每天提醒一次：过了早上九点（或开机后）提醒你学习，当天不再重复。改动立即生效。</span>
+              </div>
+            </div>
           </div>
 
           <div class="col-side">
@@ -277,11 +297,6 @@
                 <span class="field-hint">登录 Windows 后自动打开致知。改动立即生效，不用点保存。</span>
               </div>
             </div>
-
-            <div class="block">
-              <div class="block-head"><h2>数据位置</h2></div>
-              <div class="block-note" id="dataDir">读取中</div>
-            </div>
           </div>
         </div>
 
@@ -291,20 +306,17 @@
         </div>
       </section>
 
-      <!-- 指导图 -->
+      <!-- 看板 -->
       <section class="view" data-view="insight">
-        <div class="block">
-          <div class="block-head">
-            <h2>学习指导图</h2>
-            <div class="tabs" id="graphTabs">
-              <button class="tab is-active" data-graph="stage">阶段指导</button>
-              <button class="tab" data-graph="knowledge">知识地图</button>
-              <button class="tab" data-graph="plan">复习计划</button>
-              <button class="btn btn-slim" id="exportBtn">导出 SVG</button>
-            </div>
+        <div class="graph-bar">
+          <div class="tabs" id="graphTabs">
+            <button class="tab is-active" data-graph="stage">阶段指导</button>
+            <button class="tab" data-graph="knowledge">知识地图</button>
+            <button class="tab" data-graph="plan">复习计划</button>
+            <button class="btn btn-slim" id="exportBtn">导出 SVG</button>
           </div>
-          <div class="canvas" id="graphCanvas"></div>
         </div>
+        <div class="canvas" id="graphCanvas"></div>
       </section>
     </main>
   </div>

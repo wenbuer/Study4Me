@@ -1,4 +1,4 @@
-/* 致知 前端：视图切换、导入、学习、考试、指导图。 */
+/* 致知 前端：视图切换、导入、学习、考试、看板。 */
 
 const tauriCore = window.__TAURI__ && window.__TAURI__.core;
 const invoke = tauriCore
@@ -26,7 +26,7 @@ const state = {
 };
 
 const VIEW_TITLES = {
-  today: '开始', import: '材料', learn: '学习', exam: '考试', insight: '指导图', settings: '设置',
+  today: '开始', import: '材料', learn: '学习', exam: '考试', insight: '看板', settings: '设置',
 };
 
 const el = (id) => document.getElementById(id);
@@ -102,9 +102,14 @@ async function refresh() {
   renderLearn();
 }
 
+/* 今日待办 = 计划今天该学还没学的 + 到期还没复习的 */
+function todoCount() {
+  return ((state.queue.scheduled || []).length) + ((state.queue.due || []).length);
+}
+
 function renderChrome() {
   const s = state.queue.stats || {};
-  el('railDue').textContent = s.dueToday || 0;
+  el('railDue').textContent = todoCount();
   el('railDue').className = 'rail-stat-value is-due';
   el('railStreak').textContent = s.streakDays || 0;
   el('railStreak').className = 'rail-stat-value is-streak';
@@ -113,7 +118,7 @@ function renderChrome() {
     : '连接中';
   el('topMetrics').innerHTML = [
     '已学 <b>' + (s.learned || 0) + '</b> / ' + (s.cards || 0),
-    '今日到期 <b>' + (s.dueToday || 0) + '</b>',
+    '待复习 <b>' + (s.dueToday || 0) + '</b>',
     '平均分 <b>' + (s.avgScore || 0) + '</b>',
     '连续 <b>' + (s.streakDays || 0) + '</b> 天',
   ].map((item) => '<span>' + item + '</span>').join('');
@@ -131,6 +136,34 @@ function ring(pct, number, caption) {
     'stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + offset.toFixed(1) + '"/></svg>' +
     '<div class="ring-label"><span class="ring-num">' + number + '</span>' +
     '<span class="ring-cap">' + caption + '</span></div></div>';
+}
+
+/* 跳到学习页的某一节；计划排得很靠后时它不在前 60 条队列里，按需补进来 */
+async function openLearnUnit(id) {
+  let fresh = state.queue.fresh || [];
+  let index = fresh.findIndex((card) => card.id === id);
+  if (index < 0) {
+    const all = await call('list_cards', {});
+    const card = (all || []).find((item) => item.id === id);
+    if (!card || card.learned) { toast('这一节已经标记学过了', 'bad'); return; }
+    state.queue.fresh = fresh.concat([card]);
+    fresh = state.queue.fresh;
+    index = fresh.length - 1;
+  }
+  state.learnIndex = index;
+  state.learnMaterial = null;
+  state.learnQuery = '';
+  switchView('learn');
+  renderLearn();
+}
+
+/* 今天计划的待学单元：点一下直接跳到学习页的那一节 */
+function todoRow(card) {
+  return '<div class="row" data-learn-id="' + card.id + '">' +
+    '<span class="dot dot-new"></span>' +
+    '<div class="row-main"><div class="row-title">' + escapeHtml(card.title) + '</div>' +
+    '<div class="row-sub">' + escapeHtml(card.section || card.materialTitle) + ' · 计划今天该学</div></div>' +
+    '<div class="row-side">待学</div></div>';
 }
 
 function cardRow(card) {
@@ -162,17 +195,25 @@ function renderToday() {
   let copy = '';
   let actions = '';
 
+  const scheduledNow = state.queue.scheduled || [];
+
   if (due.length > 0) {
     eyebrow = '记忆曲线提醒';
-    title = '今天有 ' + due.length + ' 张卡到期';
-    copy = '这些卡正好落在记忆即将衰减的位置，先清掉它们，再去学新内容。';
+    title = '有 ' + due.length + ' 张卡该复习了';
+    copy = '它们刚好落在记忆快要衰减的位置，先清掉这几张，再去学新内容。';
     actions = '<button class="btn btn-primary" data-action="review-due">开始复习</button>' +
       '<button class="btn" data-action="go-import">补新材料</button>';
+  } else if (scheduledNow.length > 0) {
+    eyebrow = '今天的计划还没做完';
+    title = '今天还有 ' + scheduledNow.length + ' 个单元要学';
+    copy = '先按计划学完今天的量，学完当天就考一次，第一次答题决定后面几周的复习节奏。';
+    actions = '<button class="btn btn-primary" data-action="learn-scheduled">学今天的单元</button>' +
+      '<button class="btn" data-action="go-import">导入材料</button>';
   } else if (fresh.length > 0) {
-    eyebrow = '今天没有到期卡';
-    title = '可以推进 ' + fresh.length + ' 个新知识点';
-    copy = '学完当天就考一次，第一次答题的结果决定后面几周的复习节奏。';
-    actions = '<button class="btn btn-primary" data-action="learn-first">开始学习</button>' +
+    eyebrow = '今天的量已经清完';
+    title = '还可以推进 ' + fresh.length + ' 个新知识点';
+    copy = '排一份学习计划，每天自动分好量；不排也可以想学多少学多少。';
+    actions = '<button class="btn btn-primary" data-action="learn-first">继续学习</button>' +
       '<button class="btn" data-action="go-import">导入材料</button>';
   } else {
     eyebrow = '还没有内容';
@@ -189,24 +230,18 @@ function renderToday() {
     '<div class="focus-actions">' + actions + '</div>' +
     '</div>' + ring(pct, (s.learned || 0) + '/' + (s.cards || 0), '已学知识点') + '</div>';
 
-  el('dueHint').textContent = due.length ? '点击任意一张开始' : '今天很轻松';
-  el('dueList').innerHTML = due.length
-    ? due.map(cardRow).join('')
-    : '<div class="empty">没有到期卡片。晚点再来，或者去学新知识点。</div>';
+  const scheduled = state.queue.scheduled || [];
+  el('dueHint').textContent = (due.length || scheduled.length)
+    ? (scheduled.length ? '该学 ' + scheduled.length : '') +
+      (scheduled.length && due.length ? ' · ' : '') +
+      (due.length ? '到期复习 ' + due.length : '')
+    : '今天没有安排';
+  const todo = scheduled.map(todoRow).concat(due.map(cardRow));
+  el('dueList').innerHTML = todo.length
+    ? todo.join('')
+    : '<div class="empty">今天该做的都做完了。想加量就去「学习」页推进新知识点。</div>';
 
-  const stages = ['入门', '铺开', '巩固', '精通'];
-  const active = stages.indexOf(s.stage || '未开始');
-  const nodes = stages.map((name, i) => {
-    const cls = i === active ? 'stage-node is-active' : (active > i ? 'stage-node is-passed' : 'stage-node');
-    return '<div class="' + cls + '">' + name + '</div>';
-  }).join('');
-  el('stagePanel').innerHTML =
-    '<div class="stage-track">' + nodes + '</div>' +
-    '<div class="bar"><span style="width:' + Math.round((s.stageProgress || 0) * 100) + '%"></span></div>' +
-    '<div class="metric-grid">' +
-    metric(s.cards || 0, '知识点总数') + metric(s.reviewsTotal || 0, '累计练习') +
-    metric(s.activeDays || 0, '学习天数') + metric(s.avgScore || 0, '答题平均分') +
-    '</div>';
+  renderRhythm();
 
   const recent = state.recent || [];
   el('recentList').innerHTML = recent.length
@@ -215,6 +250,31 @@ function renderToday() {
         '<div class="row-sub">' + escapeHtml(r.ratedAt.slice(5, 16)) + '</div></div>' +
         '<div class="row-side">' + (r.score == null ? ratingLabel(r.rating) : r.score + ' 分') + '</div></div>').join('')
     : '<div class="empty">还没有练习记录。</div>';
+}
+
+/* 复习节奏：未来七天每天的到期量，柱子高低一眼看出哪天忙 */
+function renderRhythm() {
+  const rhythm = state.queue.rhythm || [];
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const date = new Date();
+    date.setDate(date.getDate() + i);
+    const key = date.getFullYear() + '-' +
+      String(date.getMonth() + 1).padStart(2, '0') + '-' +
+      String(date.getDate()).padStart(2, '0');
+    const hit = rhythm.find((item) => item[0] === key);
+    days.push({ key: key, label: i === 0 ? '今天' : key.slice(5), count: hit ? hit[1] : 0 });
+  }
+  const peak = Math.max(1, ...days.map((day) => day.count));
+  const total = days.reduce((sum, day) => sum + day.count, 0);
+  el('rhythmHint').textContent = total ? '未来 7 天共 ' + total + ' 张' : '未来 7 天很空';
+  el('rhythmPanel').innerHTML = days.map((day) => {
+    const height = Math.round((day.count / peak) * 52);
+    return '<div class="rhythm-day' + (day.count ? '' : ' is-empty') + '">' +
+      '<div class="rhythm-bar" style="height:' + Math.max(day.count ? 4 : 2, height) + 'px"></div>' +
+      '<div class="rhythm-count">' + day.count + '</div>' +
+      '<div class="rhythm-label">' + day.label + '</div></div>';
+  }).join('');
 }
 
 function metric(value, label) {
@@ -353,6 +413,7 @@ function renderMarkdown(source) {
   const lines = String(source || '').split('\n');
   const html = [];
   let inCode = false;
+  let codeLang = '';
   let code = [];
   let list = null;
   let table = [];
@@ -375,12 +436,18 @@ function renderMarkdown(source) {
     const line = raw.trimEnd();
     if (line.trim().startsWith(FENCE)) {
       if (inCode) {
-        html.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>');
+        const source = code.join('\n');
+        // 流程图交给 mermaid 画；其它语言照旧当代码块显示
+        html.push(codeLang === 'mermaid'
+          ? '<div class="mermaid">' + escapeHtml(source) + '</div>'
+          : '<pre><code>' + escapeHtml(source) + '</code></pre>');
         code = [];
+        codeLang = '';
         inCode = false;
       } else {
         closeList();
         closeTable();
+        codeLang = line.trim().slice(FENCE.length).trim().toLowerCase();
         inCode = true;
       }
       continue;
@@ -493,6 +560,53 @@ async function createPlan() {
   await refresh();
 }
 
+/* ── 流程图 ───────────────────────────────── */
+
+let mermaidLoading = null;
+
+/* mermaid 有 2.5 MB，第一次遇到流程图才加载；离线可用，走本地文件。 */
+function loadMermaid() {
+  if (window.mermaid) return Promise.resolve(window.mermaid);
+  if (!mermaidLoading) {
+    mermaidLoading = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'mermaid.min.js';
+      script.onload = () => {
+        window.mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          fontFamily: '"Microsoft YaHei", "Segoe UI", sans-serif',
+          themeVariables: {
+            primaryColor: '#f4fbf8',
+            primaryBorderColor: '#047857',
+            primaryTextColor: '#1a1d21',
+            lineColor: '#5b6472',
+            secondaryColor: '#f7f8fa',
+            tertiaryColor: '#ffffff',
+          },
+        });
+        resolve(window.mermaid);
+      };
+      script.onerror = () => reject(new Error('流程图组件加载失败'));
+      document.head.appendChild(script);
+    });
+  }
+  return mermaidLoading;
+}
+
+/* 把 .mermaid 占位块画成图；画不出来就保留源码，不影响继续阅读。 */
+async function renderFlowcharts(root) {
+  const nodes = Array.from(root.querySelectorAll('.mermaid'));
+  if (!nodes.length) return;
+  try {
+    const mermaid = await loadMermaid();
+    await mermaid.run({ nodes: nodes });
+  } catch (error) {
+    nodes.forEach((node) => node.classList.add('is-plain'));
+  }
+}
+
 /* ── 学习 ─────────────────────────────────── */
 
 function renderLearn() {
@@ -571,6 +685,8 @@ function renderLearn() {
     '<div class="card-actions">' +
     '<button class="btn btn-primary" data-action="learn-to-exam" data-id="' + current.id + '">学完去考试</button>' +
     '<button class="btn" data-action="learn-next">下一个单元</button></div>';
+
+  renderFlowcharts(el('learnCard'));
 }
 
 /* ── 考试 ─────────────────────────────────── */
@@ -627,7 +743,7 @@ async function submitSelfRating(rating) {
   await refresh();
 }
 
-/* ── 指导图 ───────────────────────────────── */
+/* ── 看板（阶段指导 / 知识地图 / 复习计划）─── */
 
 async function renderGraph() {
   const canvas = el('graphCanvas');
@@ -665,7 +781,15 @@ async function loadSettings() {
   el('sNoProxy').value = s.noProxy || '';
   setProxyMode(s.proxyMode || 'auto');
   el('dataDir').textContent = (state.info && state.info.dataDir) || '';
+  setSeg('#notifySeg', 'notify', s.notify !== false);
   await loadAutostart();
+}
+
+/* 二选一的开关：把 data-* 值和当前状态对上 */
+function setSeg(selector, key, on) {
+  document.querySelectorAll(selector + ' .seg-item').forEach((button) => {
+    button.classList.toggle('is-active', (button.dataset[key] === 'on') === !!on);
+  });
 }
 
 /* 开机自启：状态以注册表为准，切换后立刻落盘。 */
@@ -757,6 +881,11 @@ function bind() {
     const action = event.target.closest('[data-action]');
     const graphTab = event.target.closest('[data-graph]');
 
+    const learnTodo = event.target.closest('[data-learn-id]');
+    if (learnTodo) {
+      await openLearnUnit(Number(learnTodo.dataset.learnId));
+      return;
+    }
     if (row && !event.target.closest('button')) { loadExamCard(Number(row.dataset.card), row.dataset.mode); return; }
     if (learnRow) {
       const idx = (state.queue.fresh || []).findIndex((c) => c.id === Number(learnRow.dataset.learn));
@@ -803,6 +932,9 @@ function bind() {
       if (name === 'review-due' || name === 'learn-first') {
         const first = name === 'review-due' ? (state.queue.due || [])[0] : (state.queue.fresh || [])[0];
         if (first) loadExamCard(first.id, 'exam');
+      } else if (name === 'learn-scheduled') {
+        const first = (state.queue.scheduled || [])[0];
+        if (first) await openLearnUnit(first.id);
       } else if (name === 'go-import') {
         switchView('import');
       } else if (name === 'learn-next') {
@@ -931,6 +1063,19 @@ function bind() {
   el('proxyMode').addEventListener('click', (event) => {
     const button = event.target.closest('.seg-item');
     if (button) setProxyMode(button.dataset.mode);
+  });
+
+  el('notifySeg').addEventListener('click', async (event) => {
+    const button = event.target.closest('.seg-item');
+    if (!button) return;
+    const want = button.dataset.notify === 'on';
+    try {
+      const on = await call('set_notify', { enabled: want });
+      setSeg('#notifySeg', 'notify', on);
+      toast(on ? '已开启学习提醒（每天一条）' : '已关闭学习提醒', 'ok');
+    } catch (error) {
+      toast('设置失败：' + String(error), 'bad');
+    }
   });
 
   el('autostartSeg').addEventListener('click', async (event) => {

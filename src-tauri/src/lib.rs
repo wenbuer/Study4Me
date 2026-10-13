@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod graph;
 pub mod ingest;
 pub mod llm;
+pub mod notify;
 pub mod settings;
 pub mod srs;
 pub mod store;
@@ -316,6 +317,16 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
     autostart::enabled().map_err(err_str)
 }
 
+// ── 学习提醒 ─────────────────────────────────────────────
+
+#[tauri::command]
+fn set_notify(state: State<'_, AppState>, enabled: bool) -> Result<bool, String> {
+    let mut settings = state.settings.write().unwrap();
+    settings.notify = enabled;
+    settings.save(&state.settings_path).map_err(err_str)?;
+    Ok(settings.notify)
+}
+
 // ── 学习计划 ─────────────────────────────────────────────
 
 /// 给某份材料排一个计划：把单元按天数均分，每天学一段。
@@ -422,7 +433,11 @@ fn mark_learned(state: State<'_, AppState>, card_id: i64, learned: bool) -> Resu
 #[serde(rename_all = "camelCase")]
 struct Queue {
     due: Vec<Card>,
+    /// 今天计划要学、还没学的单元
+    scheduled: Vec<Card>,
     fresh: Vec<Card>,
+    /// 未来 7 天每天的到期量，首页画复习节奏
+    rhythm: Vec<(String, i64)>,
     stats: Stats,
 }
 
@@ -432,7 +447,9 @@ fn today_queue(state: State<'_, AppState>) -> Result<Queue, String> {
     let day = today();
     Ok(Queue {
         due: store.due_cards(&day, 200).map_err(err_str)?,
+        scheduled: store.scheduled_cards(&day, 100).map_err(err_str)?,
         fresh: store.learning_cards(60).map_err(err_str)?,
+        rhythm: store.due_forecast(&day, 6).map_err(err_str)?,
         stats: store.stats(&day).map_err(err_str)?,
     })
 }
@@ -543,7 +560,7 @@ fn recent_reviews(
         .map_err(err_str)
 }
 
-// ── 指导图 ───────────────────────────────────────────────
+// ── 看板 ─────────────────────────────────────────────────
 
 #[tauri::command]
 fn render_knowledge_map(state: State<'_, AppState>, material_id: Option<i64>) -> Result<String, String> {
@@ -624,8 +641,55 @@ fn save_snapshot(state: State<'_, AppState>, kind: String, svg: String) -> Resul
         .map_err(err_str)
 }
 
+// ── 托盘 ─────────────────────────────────────────────────
+
+/// 托盘菜单只有两项：把窗口叫回来，或真正退出。
+/// 左键点图标直接显示窗口，右键出菜单。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 致知", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("致知 · 读进去，记得住")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => reveal_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+fn reveal_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let data_dir = match std::env::var("STUDYFORGE_DATA_DIR") {
                 Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir.trim()),
@@ -648,7 +712,17 @@ pub fn run() {
                 http: RwLock::new(http),
                 data_dir,
             });
+            setup_tray(app)?;
+            notify::register_identity(&app.config().identifier, "致知");
+            notify::spawn(app.handle().clone());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关窗口只是收进托盘：开机自启时要能一直待在后台
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -665,6 +739,7 @@ pub fn run() {
             list_materials,
             autostart_on,
             set_autostart,
+            set_notify,
             create_plan,
             list_plans,
             delete_plan,

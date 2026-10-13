@@ -1,9 +1,9 @@
-# 致知 · Study4Me
+# 致知 · zhizhiStudy
 
 > 把一份材料变成一套学习与考试系统：拆出知识点、出题判分、按记忆曲线排复习，并把学习状态画成能直接看的指导图。Windows 桌面应用。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/wenbuer/Study4Me)](https://github.com/wenbuer/Study4Me/releases)
+[![Release](https://img.shields.io/github/v/release/wenbuer/zhizhiStudy)](https://github.com/wenbuer/zhizhiStudy/releases)
 
 ## 简介
 
@@ -20,7 +20,7 @@
 
 ![开始](shots/start.png)
 
-> 开始页：学习计划进度、今天要学的单元、到期卡与学习阶段统计。
+> 开始页：计划进度、今天焦点、今日待办（今天该学还没学的 + 到期还没复习的）与学习阶段统计。
 
 ![材料](shots/materials.png)
 
@@ -30,9 +30,13 @@
 
 > 学习页：左侧按章节折叠的单元目录，带素材库切换与标题搜索；右侧是完整讲解，读完有要点清单和自测题。
 
-### 指导图
+### 看板
 
-三张图都由程序直接生成 SVG，可缩放、可导出。
+![看板](shots/insight.png)
+
+> 看板：三张图直接铺在页面上，顶部切换；不再套一层卡片容器。
+
+三张图都由程序直接生成 SVG，可缩放、可导出，画布高度按内容撑开。
 
 ![知识地图](shots/knowledge-map.png)
 
@@ -40,7 +44,7 @@
 
 ![复习计划](shots/review-plan.png)
 
-> 复习计划：未来 30 天每天到期的卡片数量与当日压力。
+> 复习计划：未来 30 天每天的到期量与当日待办清单。
 
 ![阶段指导](shots/stage-guide.png)
 
@@ -56,16 +60,18 @@
 - **整仓导入**：给一个 GitHub 仓库地址，会把仓库里的全部 Markdown 文档抓下来合成一份材料
 - **模型整理 + 本地兜底**：抓回来的原始文本默认交给模型整理成干净材料（去导航广告、合并多来源、保留结构）；模型不可用时自动退回本地解析，导入不中断
 - **学完再考**：材料按标题切成学习单元，原文完整入库，不用等模型就能开始读；考点（摘要 / 要点 / 考题 / 答案）分步生成，进度可见
+- **流程图渲染**：讲解里的 ```mermaid 代码块直接画成流程图（内置 mermaid，离线可用），其余语言仍按代码块显示
 - **AI 评判**：作答后对照参考答案打分，给出评语、遗漏点与理想回答，分数自动映射成 FSRS 四档评分
 - **FSRS 排程**：Anki 默认的记忆曲线算法，目标保持率 0.9，每天只需清掉当天到期的卡
 - **学习计划**：给某份材料设定天数与每天单元数，自动生成逐日计划，首页直接开始今天的学习
-- **三张指导图**：知识地图、复习计划、阶段指导，一键导出 SVG
+- **看板**：知识地图、复习计划、阶段指导三张图，一键导出 SVG
 - **网络代理自动检测**：环境变量 → Windows 系统代理 → 常见本地端口逐级探测，也可以在设置页手动指定
 - **开机自启**：设置页一个开关，写当前用户的启动项，不需要管理员权限
+- **托盘常驻**：关窗口只是收进托盘，托盘图标左键唤回窗口、右键菜单可显示或退出
 
 ## 快速开始
 
-到 [Releases](https://github.com/wenbuer/Study4Me/releases) 下载 `Zhizhi.exe` 直接运行，Windows 10/11 自带 WebView2，无需安装其他依赖。
+到 [Releases](https://github.com/wenbuer/zhizhiStudy/releases) 下载 `Zhizhi.exe` 直接运行，Windows 10/11 自带 WebView2，无需安装其他依赖。
 
 首次启动后在**设置**页填模型接口（默认 DeepSeek 官方）：
 
@@ -150,7 +156,7 @@ SiliconFlow、阿里百炼、智谱 GLM。
       src/llm.rs           模型调用：整理材料、生成考点、评判作答
       src/store.rs         SQLite：材料、单元、复习记录、计划、统计
       src/srs.rs           FSRS 排程与评分映射
-      src/graph.rs         三张指导图的 SVG 生成
+      src/graph.rs         看板三张图的 SVG 生成
       src/lib.rs           Tauri 命令与状态
     src/                  前端（零构建）
       index.html           六个视图的骨架

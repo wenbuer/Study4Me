@@ -168,6 +168,12 @@ body {
 }
 
 .block + .block { margin-top: 18px; }
+
+/* 两列等高：最后一卡撑满剩余高度，左右底边对齐 */
+.grid-today .col-main > .block:last-child,
+.grid-today .col-side > .block:last-child,
+.grid-settings .col-main > .block:last-child,
+.grid-settings .col-side > .block:last-child { flex: 1; }
 .col-main .block + .block, .col-side .block + .block { margin-top: 0; }
 .grid-import .block + .block, .study-side + .block { margin-top: 0; }
 
@@ -542,6 +548,26 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
 }
 .unit-group .row { margin-bottom: 6px; }
 
+/* 学习页：mermaid 流程图。画不出来时（is-plain）保留源码，别让它变成空白块 */
+.mermaid {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid svg { max-width: 100%; height: auto; }
+.mermaid.is-plain {
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  text-align: left;
+  white-space: pre;
+}
+
 /* 学习页：完整讲解的 Markdown 排版 */
 .unit-body {
   max-width: 76ch;
@@ -630,7 +656,7 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
   background: #fafbfc;
 }
 
-/* 指导图 */
+/* 看板 */
 
 .tabs { display: flex; gap: 6px; align-items: center; }
 
@@ -649,16 +675,41 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
 .tab:hover { color: var(--fg); background: #f2f5f8; }
 .tab.is-active { background: #e7ebf0; border-color: var(--line-strong); color: var(--fg); }
 
+/* 看板页：图本身自带白底与内部分区，外面不再套一层卡片 */
+.graph-bar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+
 .canvas {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #ffffff;
-  padding: 10px;
   overflow: auto;
   max-height: calc(100vh - 220px);
 }
 
 .canvas svg { display: block; max-width: 100%; height: auto; }
+
+/* 首页：复习节奏（未来七天） */
+.rhythm {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 2px 0;
+}
+
+.rhythm-day {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.rhythm-bar {
+  width: 100%;
+  border-radius: 4px 4px 2px 2px;
+  background: var(--accent);
+}
+
+.rhythm-day.is-empty .rhythm-bar { background: #e4e7ec; }
+.rhythm-count { font-size: 12px; color: var(--fg-muted); font-family: var(--font-mono); }
+.rhythm-label { font-size: 11px; color: var(--fg-dim); }
 
 /* 阶段进度 */
 

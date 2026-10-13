@@ -1,4 +1,4 @@
-//! 程序化生成学习指导图：知识地图 / 复习计划 / 阶段指导（纯 SVG 字符串，无渲染依赖）。
+//! 程序化生成看板三张图：知识地图 / 复习计划 / 阶段指导（纯 SVG 字符串，无渲染依赖）。
 
 use crate::store::{Card, Stats};
 
@@ -155,7 +155,7 @@ pub fn knowledge_map(material_title: &str, cards: &[Card], today: &str) -> Strin
         MUTED,
         "500",
         "end",
-        &format!("已学 {learned} / {} · 今日到期 {due}", cards.len()),
+        &format!("已学 {learned} / {} · 待复习 {due}", cards.len()),
     ));
 
     // 图例
@@ -163,7 +163,7 @@ pub fn knowledge_map(material_title: &str, cards: &[Card], today: &str) -> Strin
     for (color, label) in [
         (INFO, "已学待测"),
         (ACCENT, "已进复习"),
-        (WARN, format!("今日到期 {due}").as_str()),
+        (WARN, format!("待复习 {due}").as_str()),
         (DIM, "未学"),
     ] {
         s.push_str(&legend(legend_x, 146.0, color, label));
@@ -331,7 +331,7 @@ pub fn review_plan(forecast: &[(String, i64)], today: &str, queue: &[Card]) -> S
     let list_top = chart_top + chart_h + 76.0;
     s.push_str(&text(left, list_top, 18.0, FG, "600", "start", &format!("今天要做（{} 张）", queue.len())));
     if queue.is_empty() {
-        s.push_str(&text(left, list_top + 32.0, 14.0, MUTED, "400", "start", "今天没有到期的卡片：要么去学新卡，要么休息。"));
+        s.push_str(&text(left, list_top + 32.0, 14.0, MUTED, "400", "start", "今天没有要复习的卡：要么去学新卡，要么休息。"));
     }
     for (i, card) in queue.iter().take(queue_rows).enumerate() {
         let y = list_top + 34.0 + i as f64 * 30.0;
@@ -348,7 +348,21 @@ pub fn review_plan(forecast: &[(String, i64)], today: &str, queue: &[Card]) -> S
 pub fn stage_guide(stats: &Stats, cards: &[Card], today: &str) -> String {
     let stages = ["入门", "铺开", "巩固", "精通"];
     let width = 1280.0f64;
-    let height = 900.0f64;
+
+    // 建议与薄弱点先算出来，画布高度按实际内容撑开，避免末尾被裁掉
+    let advice = advice_for(stats, cards, today);
+    let mut weak: Vec<(&Card, f64)> = cards
+        .iter()
+        .filter(|c| c.learned && c.reps > 0)
+        .map(|c| (c, c.stability))
+        .collect();
+    weak.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let weak_rows = weak.len();
+    let list_top = 500.0f64;
+    let weak_top = list_top + 34.0 + advice.len() as f64 * 78.0 + 24.0;
+    let weak_line = if weak_rows == 0 { 30.0 } else { 32.0 + weak_rows as f64 * 30.0 };
+    let height = (weak_top + weak_line + 48.0).max(900.0);
+
     let mut s = svg_open(width, height);
     s.push_str(&text(64.0, 66.0, 30.0, FG, "700", "start", "阶段学习指导"));
     s.push_str(&text(
@@ -400,7 +414,7 @@ pub fn stage_guide(stats: &Stats, cards: &[Card], today: &str) -> String {
     // 指标卡
     let metrics = [
         ("已学知识点", format!("{} / {}", stats.learned, stats.cards), ACCENT),
-        ("今日到期", format!("{}", stats.due_today), WARN),
+        ("待复习", format!("{}", stats.due_today), WARN),
         ("答题平均分", format!("{:.1}", stats.avg_score), ACCENT),
         ("连续学习", format!("{} 天", stats.streak_days), FG),
         ("累计练习", format!("{} 次", stats.reviews_total), FG),
@@ -418,8 +432,6 @@ pub fn stage_guide(stats: &Stats, cards: &[Card], today: &str) -> String {
     }
 
     // 下一步建议
-    let advice = advice_for(stats, cards, today);
-    let list_top = 500.0f64;
     s.push_str(&text(64.0, list_top, 20.0, FG, "700", "start", "下一步怎么走"));
     for (i, (headline, detail)) in advice.iter().enumerate() {
         let y = list_top + 34.0 + i as f64 * 78.0;
@@ -432,23 +444,19 @@ pub fn stage_guide(stats: &Stats, cards: &[Card], today: &str) -> String {
         s.push_str(&text(86.0, y + 50.0, 13.0, MUTED, "400", "start", detail));
     }
 
-    // 薄弱点
-    let mut weak: Vec<(&Card, f64)> = cards
-        .iter()
-        .filter(|c| c.learned && c.reps > 0)
-        .map(|c| (c, c.stability))
-        .collect();
-    weak.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    let weak_top = list_top + 34.0 + advice.len() as f64 * 78.0 + 24.0;
+    // 薄弱点：左边标题最长 40 字，右侧留出指标位，避免互相压字
     s.push_str(&text(64.0, weak_top, 20.0, FG, "700", "start", "最薄弱的知识点（优先重学）"));
     if weak.is_empty() {
         s.push_str(&text(64.0, weak_top + 30.0, 14.0, MUTED, "400", "start", "还没有复习记录，先去考试模式答几题。"));
     }
-    for (i, (card, stability)) in weak.iter().take(4).enumerate() {
+    for (i, (card, stability)) in weak.iter().take(6).enumerate() {
         let y = weak_top + 32.0 + i as f64 * 30.0;
         s.push_str(&format!("<circle cx=\"72\" cy=\"{cy}\" r=\"4\" fill=\"{BAD}\"/>", cy = y - 4.0, BAD = BAD));
-        s.push_str(&text(88.0, y, 14.0, FG, "400", "start", &format!("{} — {}", card.material_title, card.title)));
+        s.push_str(&text(88.0, y, 14.0, FG, "400", "start", &clip(&format!("{} · {}", card.title, card.material_title), 56)));
         s.push_str(&text(width - 64.0, y, 12.5, MUTED, "400", "end", &format!("记忆稳定度 {:.1} · 复习 {} 次", stability, card.reps)));
+    }
+    if weak_rows > 6 {
+        s.push_str(&text(64.0, weak_top + 32.0 + 6.0 * 30.0, 13.0, MUTED, "400", "start", &format!("还有 {} 个薄弱知识点，去考试页按分数排序复习。", weak_rows - 6)));
     }
 
     s.push_str("</svg>");
@@ -465,11 +473,11 @@ fn advice_for(stats: &Stats, cards: &[Card], today: &str) -> Vec<(String, String
     }
     if stats.due_today > 0 {
         out.push((
-            format!("先清掉今天到期的 {} 张卡", stats.due_today),
-            "到期卡在记忆即将衰减时复习最省力，优先做它们，再学新内容。".into(),
+            format!("先复习这 {} 张卡", stats.due_today),
+            "它们刚好落在记忆快要衰减的位置，先做它们再学新内容最省力。".into(),
         ));
     } else {
-        out.push(("今天没有到期卡".into(), "可以推进新知识点，或者把最薄弱的卡片手动重来一遍。".into()));
+        out.push(("今天没有要复习的卡".into(), "可以推进新知识点，或者把最薄弱的卡片手动重来一遍。".into()));
     }
     if unlearned > 0 {
         out.push((
@@ -489,9 +497,9 @@ fn advice_for(stats: &Stats, cards: &[Card], today: &str) -> Vec<(String, String
         ));
     }
     if stats.streak_days >= 2 {
-        out.push((format!("已连续学习 {} 天", stats.streak_days), "保持节奏比一次学很多更重要，今天哪怕只清到期卡也算延续。".into()));
+        out.push((format!("已连续学习 {} 天", stats.streak_days), "保持节奏比一次学很多更重要，今天哪怕只复习几张也算延续。".into()));
     } else {
-        out.push(("把节奏固定下来".into(), "每天固定一个时间点打开，先清到期卡再学新卡，连续 7 天会明显感到轻松。".into()));
+        out.push(("把节奏固定下来".into(), "每天固定一个时间点打开，先复习到期的再学新的，连续 7 天会明显感到轻松。".into()));
     }
     let _ = today;
     out.truncate(4);
@@ -527,7 +535,7 @@ mod tests {
     #[test]
     fn review_plan_handles_empty_forecast() {
         let svg = review_plan(&[], "2026-10-10", &[]);
-        assert!(svg.contains("今天没有到期的卡片"));
+        assert!(svg.contains("今天没有要复习的卡"));
     }
 
     #[test]
@@ -539,7 +547,7 @@ mod tests {
         };
         let svg = stage_guide(&stats, &[card(1, 1, true, "2026-10-10", 2)], "2026-10-10");
         assert!(svg.contains("下一步怎么走"));
-        assert!(svg.contains("先清掉今天到期的 3 张卡"));
+        assert!(svg.contains("先复习这 3 张卡"));
     }
 
     #[test]

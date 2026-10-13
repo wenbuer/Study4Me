@@ -297,14 +297,29 @@ impl Store {
         Ok(self.conn.query_row(&sql, params![id], |r| Self::map_card(r)).optional()?)
     }
 
+    /// 到期该复习、且今天还没复习过的卡：今天复习过的当天不再出现。
     pub fn due_cards(&self, today: &str, limit: i64) -> Result<Vec<Card>> {
         let sql = format!(
-            "{} WHERE c.learned = 1 AND c.due <= ?1 ORDER BY c.due ASC, c.id ASC LIMIT ?2",
+            "{} WHERE c.learned = 1 AND c.due <= ?1              AND (c.last_review IS NULL OR SUBSTR(c.last_review, 1, 10) <> ?1)              ORDER BY c.due ASC, c.id ASC LIMIT ?2",
             Self::CARD_SELECT
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![today, limit], |r| Self::map_card(r))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 今天的学习计划排到、但还没标记已学的单元（首页待办的前半部分）。
+    pub fn scheduled_cards(&self, today: &str, limit: i64) -> Result<Vec<Card>> {
+        let mut out: Vec<Card> = Vec::new();
+        for plan in self.list_plans()? {
+            let Some(today_plan) = self.plan_today(plan.id, today)? else { continue };
+            out.extend(today_plan.day_units.into_iter().filter(|card| !card.learned));
+            if out.len() as i64 >= limit {
+                break;
+            }
+        }
+        out.truncate(limit.max(1) as usize);
+        Ok(out)
     }
 
     pub fn learning_cards(&self, limit: i64) -> Result<Vec<Card>> {
@@ -393,8 +408,11 @@ impl Store {
         let materials: i64 = self.conn.query_row("SELECT COUNT(*) FROM materials", [], |r| r.get(0))?;
         let cards: i64 = self.conn.query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))?;
         let learned: i64 = self.conn.query_row("SELECT COUNT(*) FROM cards WHERE learned = 1", [], |r| r.get(0))?;
+        // 与首页「今天要做」同一口径：今天已经复习过的不再算欠账
         let due_today: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE learned = 1 AND due <= ?1", params![today], |r| r.get(0))?;
+            "SELECT COUNT(*) FROM cards WHERE learned = 1 AND due <= ?1 \
+             AND (last_review IS NULL OR substr(last_review, 1, 10) <> ?1)",
+            params![today], |r| r.get(0))?;
         let reviews_total: i64 = self.conn.query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))?;
         let reviews_today: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM reviews WHERE substr(rated_at, 1, 10) = ?1", params![today], |r| r.get(0))?;
