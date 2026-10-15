@@ -1,6 +1,6 @@
 [package]
 name = "zhizhi"
-version = "1.0.4"
+version = "1.0.5"
 description = "致知：把任意材料变成学习与复习计划的桌面应用"
 edition = "2021"
 rust-version = "1.82"
