@@ -25,6 +25,7 @@ const state = {
   learnMaterial: null,
   learnCardId: null,
   practice: null,
+  reading: false,
 };
 
 const VIEW_TITLES = {
@@ -77,6 +78,7 @@ function switchView(name) {
     node.classList.toggle('is-active', node.dataset.view === name);
   });
   el('viewTitle').textContent = VIEW_TITLES[name] || name;
+  if (name !== 'learn' && state.reading) setReading(false);
   if (name === 'insight') renderGraph();
   if (name === 'quiz') renderQuiz().catch((error) => toast('测验页加载失败：' + String(error), 'bad'));
   if (name === 'exam') {
@@ -620,6 +622,13 @@ async function renderFlowcharts(root) {
 
 /* ── 学习 ─────────────────────────────────── */
 
+/* 全屏阅读：收起导航与侧栏，正文独占窗口；再点一次或按 Esc 退出 */
+function setReading(on) {
+  state.reading = on;
+  document.body.classList.toggle('is-reading', on);
+  if (state.view === 'learn') renderLearn();
+}
+
 function renderLearn() {
   // 素材库切换器
   const select = el('learnMaterial');
@@ -695,9 +704,16 @@ function renderLearn() {
     : '';
 
   el('learnCard').innerHTML =
-    '<div class="card-meta">' + escapeHtml(current.section || '') + ' · ' +
-    escapeHtml(current.materialTitle) + ' · 第 ' + current.seq + ' 单元</div>' +
-    '<h3 class="card-title">' + escapeHtml(current.title) + '</h3>' +
+    '<div class="card-head">' +
+      '<div class="card-head-text">' +
+        '<div class="card-meta">' + escapeHtml(current.section || '') + ' · ' +
+        escapeHtml(current.materialTitle) + ' · 第 ' + current.seq + ' 单元</div>' +
+        '<h3 class="card-title">' + escapeHtml(current.title) + '</h3>' +
+      '</div>' +
+      '<button class="btn btn-slim card-full" data-action="learn-full" title="' +
+        (state.reading ? '退出全屏阅读' : '全屏阅读') + '">' +
+        (state.reading ? '关闭' : '全屏') + '</button>' +
+    '</div>' +
     '<div class="unit-body">' +
       renderMarkdown(stripLeadTitle(current.content || current.summary, current.title)) + '</div>' +
     points + quizNotes + quiz +
@@ -1514,6 +1530,8 @@ function bind() {
       } else if (name === 'learn-next') {
         state.learnIndex = Math.min(state.learnIndex + 1, (state.queue.fresh || []).length - 1);
         renderLearn();
+      } else if (name === 'learn-full') {
+        setReading(!state.reading);
       } else if (name === 'plan-study') {
         const planId = Number(action.dataset.id);
         const current = await call('plan_today', { planId: planId });
@@ -1679,6 +1697,7 @@ function bind() {
     }));
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.reading) { setReading(false); return; }
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
       if (state.view === 'exam') {

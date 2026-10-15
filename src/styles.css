@@ -440,21 +440,80 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
   margin: 0 auto;
 }
 
-/* 学习页工具条：素材库切换 + 搜索横排在页面顶部，下面才是章节与内容 */
-.study-tools {
-  display: flex;
+/* 学习页顶部的抽屉：平时收起，鼠标靠近上边界（或键盘焦点进入）才滑出 */
+.study-drawer {
+  position: relative;
   flex: none;
-  align-items: flex-end;
-  gap: 12px;
-  margin: 0 0 14px;
-  padding: 12px;
+  height: 14px;
+  margin-bottom: 6px;
+  z-index: 6;
+}
+
+.study-tools {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-2);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.09);
+  transform: translateY(calc(-100% - 6px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 180ms ease, opacity 160ms ease;
 }
 
-.study-tools .tool-field:first-child { flex: 0 0 260px; }
-.study-tools .tool-field:last-child { flex: 1 1 auto; min-width: 0; }
+.study-drawer:hover .study-tools,
+.study-drawer:focus-within .study-tools {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 标签和控件同一行 */
+.study-tools .tool-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.study-tools .tool-field:first-child { flex: 0 0 300px; }
+.study-tools .tool-field:last-child { flex: 1 1 auto; }
+.study-tools .tool-label {
+  flex: none;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+.study-tools .select-wrap,
+.study-tools .search-wrap { flex: 1 1 auto; min-width: 0; }
+
+/* 全屏阅读：收起导航、顶栏和侧栏，正文独占窗口 */
+body.is-reading .rail,
+body.is-reading .topbar,
+body.is-reading .study-drawer,
+body.is-reading .study-side { display: none; }
+
+body.is-reading .shell { grid-template-columns: minmax(0, 1fr); }
+body.is-reading .view[data-view="learn"] { padding: 0; }
+body.is-reading .view[data-view="learn"] .grid-study { grid-template-columns: minmax(0, 1fr); }
+body.is-reading .study-card {
+  border: none;
+  border-radius: 0;
+  padding: 40px 56px 72px;
+}
+
+/* 全屏时正文收成一条居中的阅读栏，行宽别拉太长 */
+body.is-reading .study-card > * {
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 卡片头部：左边标题文字，右边全屏 / 关闭，各占各的位置不重叠 */
+.card-head { display: flex; align-items: flex-start; gap: 16px; }
+.card-head-text { flex: 1 1 auto; min-width: 0; }
+.card-full { flex: none; }
+.card-head .card-meta { margin-bottom: 6px; }
 
 .tool-field { display: block; }
 .tool-label {
