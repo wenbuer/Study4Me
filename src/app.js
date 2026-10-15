@@ -24,6 +24,7 @@ const state = {
   learnQuery: '',
   learnMaterial: null,
   learnCardId: null,
+  practice: null,
 };
 
 const VIEW_TITLES = {
@@ -78,6 +79,10 @@ function switchView(name) {
   el('viewTitle').textContent = VIEW_TITLES[name] || name;
   if (name === 'insight') renderGraph();
   if (name === 'quiz') renderQuiz().catch((error) => toast('测验页加载失败：' + String(error), 'bad'));
+  if (name === 'exam') {
+    showExamPane('practice');
+    renderExam().catch((error) => toast('练习页加载失败：' + String(error), 'bad'));
+  }
   if (name === 'import') renderMaterials();
   if (name === 'learn') renderLearn();
   if (name === 'settings') loadSettings().catch(() => {});
@@ -105,6 +110,7 @@ async function refresh() {
   renderPlans();
   renderLearn();
   if (state.view === 'quiz') renderQuiz().catch(() => {});
+  if (state.view === 'exam') renderExam().catch(() => {});
 }
 
 /* 今日待办 = 计划今天该学还没学的 + 到期还没复习的 */
@@ -729,6 +735,7 @@ async function loadExamCard(cardId, mode) {
   el('examAnswer').value = '';
   el('gradeBlock').hidden = true;
   switchView('exam');
+  showExamPane('card');
 }
 
 async function submitGrade() {
@@ -765,6 +772,147 @@ async function submitSelfRating(rating) {
   await refresh();
 }
 
+
+/* ── 练习：按已学章节随机出卷 ─────────────── */
+
+function practiceState() {
+  if (!state.practice) {
+    state.practice = {
+      exam: null, items: [], index: 0, answers: {},
+      view: 'setup', progress: '', located: false,
+    };
+  }
+  return state.practice;
+}
+
+function showExamPane(name) {
+  el('practiceWrap').hidden = name !== 'practice';
+  el('cardWrap').hidden = name !== 'card';
+}
+
+/* 打开练习页：有没交卷的练习就接着做，否则给一个「开始练习」的入口 */
+async function renderExam() {
+  const practice = practiceState();
+  if (!practice.exam) {
+    const open = (state.exams || []).find((exam) => exam.kind === 'practice' && exam.status !== 'done');
+    if (open) practice.exam = { id: open.id };
+  }
+  if (practice.exam) {
+    const paper = await call('get_exam', { examId: practice.exam.id });
+    practice.exam = paper.exam;
+    practice.items = paper.items;
+    practice.items.forEach((item) => {
+      if (item.userAnswer) practice.answers[item.id] = item.userAnswer;
+    });
+    if (practice.view === 'setup') {
+      practice.view = practice.exam.status === 'done' ? 'result' : 'paper';
+    }
+    if (!practice.located) {
+      practice.located = true;
+      practice.index = firstOpenIndex(practice.items, practice.answers);
+    }
+  }
+  renderExamMain();
+  renderExamSide();
+}
+
+/* 接着上次做：落到第一道还没答的题 */
+function firstOpenIndex(items, answers) {
+  const index = items.findIndex((item) => (answers[item.id] || item.userAnswer || '').trim() === '');
+  if (index >= 0) return index;
+  return Math.max(0, items.length - 1);
+}
+
+function renderExamMain() {
+  const practice = practiceState();
+  const box = el('practiceMain');
+  if (practice.view === 'paper') {
+    box.innerHTML = paperHTML(practice);
+    bindPaper(practice, 'practiceMain', submitPractice, () => { renderExamMain(); renderExamSide(); });
+    return;
+  }
+  if (practice.view === 'result') { box.innerHTML = resultHTML(practice); return; }
+  box.innerHTML = practiceSetupHTML();
+  const start = el('practiceStartBtn');
+  if (start) start.addEventListener('click', (event) => withBusy(event.currentTarget, '出题中', () => startPractice()));
+}
+
+function practiceSetupHTML() {
+  const practice = practiceState();
+  return '<div class="block">' +
+    '<div class="block-head"><h2>随机练习</h2>' +
+    '<span class="block-hint">只考学过的单元 · 每章 1–3 题 · 题型随机 · 必有一道简答</span></div>' +
+    '<p class="block-note">题目从你已经学过的单元里随机抽：逐题作答，答不上来可以跳过，' +
+    '随时交卷。没做完的练习会留着，下次打开接着做。</p>' +
+    '<div class="field-row field-row-end" style="margin-top:16px">' +
+    '<span class="kbd-hint">Ctrl + Enter 交卷</span>' +
+    '<button class="btn btn-primary" id="practiceStartBtn">开始一份练习</button>' +
+    '</div>' +
+    (practice.progress ? '<div class="result" style="margin-top:14px">' + escapeHtml(practice.progress) + '</div>' : '') +
+    '</div>';
+}
+
+function renderExamSide() {
+  const practice = practiceState();
+  const side = el('practiceSide');
+  if (practice.view !== 'paper' || !practice.items.length) {
+    side.innerHTML = '<div class="block"><div class="block-head"><h2>怎么练</h2></div>' +
+      '<div class="block-note">题量按章节随机：每章 1–3 道；题型也随机，其中至少一道简答题。</div>' +
+      '<div class="block-note">客观题（单选 / 多选 / 判断 / 填空）本地判分，简答题交模型按点给分。</div>' +
+      '<div class="block-note">跳过不答的题不计分，卷子留着——下次打开练习页继续。</div></div>';
+    return;
+  }
+  side.innerHTML = paperNavHTML(practice);
+  bindPaperNav(practice, side, () => { renderExamMain(); renderExamSide(); });
+}
+
+async function startPractice() {
+  const practice = practiceState();
+  practice.progress = '正在按已学章节随机抽题…';
+  renderExamMain();
+  const out = await call('create_practice', { materialId: null });
+  practice.exam = { id: out.examId };
+  practice.items = [];
+  practice.answers = {};
+  practice.index = 0;
+  practice.located = false;
+  practice.view = 'setup';
+  renderExamMain();
+  await paperSteps(out.examId, (step) => {
+    practice.progress = '正在出题 ' + step.made + '/' + (step.made + step.remaining) + '…';
+    renderExamMain();
+  });
+  practice.located = false;
+  practice.progress = '';
+  await renderExam();
+  toast('练习出好了：' + out.total + ' 题', 'ok');
+}
+
+async function submitPractice() {
+  const practice = practiceState();
+  if (!practice.exam) return;
+  const paper = await call('submit_exam', { examId: practice.exam.id });
+  practice.exam = paper.exam;
+  practice.items = paper.items;
+  practice.view = 'result';
+  toast('已判分：' + (paper.exam.score || 0) + ' / ' + paper.exam.fullScore + ' 分', 'ok');
+  renderExamMain();
+  renderExamSide();
+  await refresh();
+}
+
+/* 逐批出题；一次出不完就接着来，连着出不来就停手，别死循环 */
+async function paperSteps(examId, onStep) {
+  let last = -1;
+  for (;;) {
+    const step = await call('exam_step', { examId: examId, batch: 4 });
+    onStep(step);
+    if (step.error) toast('出题中断：' + step.error, 'bad');
+    if (step.done || step.remaining === 0) break;
+    if (step.made <= last) break;
+    last = step.made;
+  }
+}
 
 /* ── 测验：出卷 / 答题 / 判分 / 复习要点 ───── */
 
@@ -823,8 +971,12 @@ async function renderQuiz() {
 function renderQuizMain() {
   const quiz = quizState();
   const box = el('quizMain');
-  if (quiz.view === 'paper') { box.innerHTML = quizPaperHTML(); bindQuizPaper(); return; }
-  if (quiz.view === 'result') { box.innerHTML = quizResultHTML(); return; }
+  if (quiz.view === 'paper') {
+    box.innerHTML = paperHTML(quiz);
+    bindPaper(quiz, 'quizMain', submitExam, () => { renderQuizMain(); renderQuizSide(); });
+    return;
+  }
+  if (quiz.view === 'result') { box.innerHTML = resultHTML(quiz); return; }
   box.innerHTML = quizSetupHTML();
   bindQuizSetup();
 }
@@ -935,24 +1087,17 @@ async function createExam() {
 
 async function examSteps(examId) {
   const quiz = quizState();
-  let last = -1;
-  for (;;) {
-    const step = await call('exam_step', { examId: examId, batch: 4 });
+  await paperSteps(examId, (step) => {
     quiz.progress = '正在出题 ' + step.made + '/' + (step.made + step.remaining) + '…';
     renderQuizMain();
-    if (step.error) { toast('出题中断：' + step.error, 'bad'); }
-    if (step.done || step.remaining === 0) break;
-    // 这一批没出成任何题就停下，别一直重试同一个错误
-    if (step.made <= last) break;
-    last = step.made;
-  }
+  });
 }
 
-function quizPaperHTML() {
-  const quiz = quizState();
-  const item = quiz.items[quiz.index];
+/// 答题界面：测验页和练习页共用，machine 是各自那份卷子状态。
+function paperHTML(machine) {
+  const item = machine.items[machine.index];
   if (!item) return '<div class="block"><div class="empty">这张卷子还没有题目。</div></div>';
-  const answer = quiz.answers[item.id] || item.userAnswer || '';
+  const answer = machine.answers[item.id] || item.userAnswer || '';
   const label = kindLabel(item.kind);
 
   let body = '';
@@ -980,7 +1125,7 @@ function quizPaperHTML() {
   return '<div class="block">' +
     '<div class="quiz-head">' +
     '<div><span class="quiz-kind">' + label + '</span>' +
-    '<span class="quiz-seq">' + item.seq + ' / ' + quiz.items.length + ' · ' + item.points + ' 分</span></div>' +
+    '<span class="quiz-seq">' + item.seq + ' / ' + machine.items.length + ' · ' + item.points + ' 分</span></div>' +
     '<span class="block-hint">' + escapeHtml(item.cardTitle || '') + '</span></div>' +
     '<p class="quiz-stem">' + escapeHtml(item.stem) + '</p>' +
     body +
@@ -988,38 +1133,39 @@ function quizPaperHTML() {
     '<button class="btn" data-quiz-nav="prev">上一题</button>' +
     '<button class="btn" data-quiz-nav="next">下一题</button>' +
     '<span class="spacer"></span>' +
-    '<button class="btn btn-primary" id="quizSubmitBtn">交卷并判分</button>' +
+    '<button class="btn btn-primary" data-paper-submit="1">交卷并判分</button>' +
     '</div></div>';
 }
 
-function bindQuizPaper() {
-  const quiz = quizState();
-  const item = quiz.items[quiz.index];
-  el('quizMain').querySelectorAll('[data-answer]').forEach((input) => {
+function bindPaper(machine, rootId, submit, rerender) {
+  const root = el(rootId);
+  const item = machine.items[machine.index];
+  if (!item) return;
+  root.querySelectorAll('[data-answer]').forEach((input) => {
     input.addEventListener('change', () => {
       const id = Number(input.dataset.answer);
-      const current = quiz.items.find((entry) => entry.id === id);
+      const current = machine.items.find((entry) => entry.id === id);
       if (current && current.kind === 'multi') {
-        const picked = Array.from(el('quizMain').querySelectorAll('[data-answer="' + id + '"]:checked'))
+        const picked = Array.from(root.querySelectorAll('[data-answer="' + id + '"]:checked'))
           .map((node) => node.value).sort().join('');
-        quiz.answers[id] = picked;
+        machine.answers[id] = picked;
       } else {
-        quiz.answers[id] = input.value;
+        machine.answers[id] = input.value;
       }
-      call('save_exam_answer', { itemId: id, answer: quiz.answers[id] }).catch(() => {});
-      renderQuizSide();
+      call('save_exam_answer', { itemId: id, answer: machine.answers[id] }).catch(() => {});
+      rerender();
     });
   });
-  el('quizMain').querySelectorAll('[data-quiz-nav]').forEach((button) => {
+  root.querySelectorAll('[data-quiz-nav]').forEach((button) => {
     button.addEventListener('click', () => {
       const delta = button.dataset.quizNav === 'next' ? 1 : -1;
-      quiz.index = Math.min(quiz.items.length - 1, Math.max(0, quiz.index + delta));
-      renderQuizMain();
-      renderQuizSide();
+      machine.index = Math.min(machine.items.length - 1, Math.max(0, machine.index + delta));
+      rerender();
     });
   });
-  el('quizSubmitBtn').addEventListener('click', (event) =>
-    withBusy(event.currentTarget, '判分中', () => submitExam()));
+  const submitBtn = root.querySelector('[data-paper-submit]');
+  if (submitBtn) submitBtn.addEventListener('click', (event) =>
+    withBusy(event.currentTarget, '判分中', () => submit()));
 }
 
 async function submitExam() {
@@ -1042,28 +1188,36 @@ function renderQuizSide() {
       '简答和案例交模型按点给分。交卷后会生成复习要点，并把要点写回对应知识点。</div></div>';
     return;
   }
-  const answers = quiz.answers;
-  const nav = quiz.items.map((item, index) => {
+  side.innerHTML = paperNavHTML(quiz);
+  bindPaperNav(quiz, side, () => { renderQuizMain(); renderQuizSide(); });
+}
+
+/// 题号导航：测验与练习共用。
+function paperNavHTML(machine) {
+  const answers = machine.answers;
+  const nav = machine.items.map((item, index) => {
     const answered = (answers[item.id] || item.userAnswer || '').trim() !== '';
-    const done = quiz.view === 'result';
+    const done = machine.view === 'result';
     const cls = ['quiz-nav-item'];
     if (done) cls.push(item.verdict === 'correct' ? 'is-right' : 'is-wrong');
-    else if (index === quiz.index) cls.push('is-current');
+    else if (index === machine.index) cls.push('is-current');
     else if (answered) cls.push('is-answered');
     return '<button class="' + cls.join(' ') + '" data-quiz-jump="' + index + '">' + item.seq + '</button>';
   }).join('');
-  const answeredCount = quiz.items.filter((item) => (answers[item.id] || item.userAnswer || '').trim() !== '').length;
-  side.innerHTML = '<div class="block">' +
-    '<div class="block-head"><h2>题号</h2><span class="block-hint">已答 ' + answeredCount + '/' + quiz.items.length + '</span></div>' +
+  const answeredCount = machine.items.filter((item) => (answers[item.id] || item.userAnswer || '').trim() !== '').length;
+  return '<div class="block">' +
+    '<div class="block-head"><h2>题号</h2><span class="block-hint">已答 ' + answeredCount + '/' + machine.items.length + '</span></div>' +
     '<div class="quiz-nav">' + nav + '</div>' +
     '<div class="quiz-legend"><span>· 实心 = 当前题</span><span>· 描边 = 已作答</span>' +
-    (quiz.view === 'result' ? '<span>· 绿 = 答对，红 = 答错</span>' : '') + '</div>' +
+    (machine.view === 'result' ? '<span>· 绿 = 答对，红 = 答错</span>' : '') + '</div>' +
     '</div>';
+}
+
+function bindPaperNav(machine, side, rerender) {
   side.querySelectorAll('[data-quiz-jump]').forEach((button) => {
     button.addEventListener('click', () => {
-      quiz.index = Number(button.dataset.quizJump);
-      renderQuizMain();
-      renderQuizSide();
+      machine.index = Number(button.dataset.quizJump);
+      rerender();
     });
   });
 }
@@ -1071,7 +1225,7 @@ function renderQuizSide() {
 function renderQuizHistory() {
   const list = el('quizHistoryList');
   if (!list) return;
-  const exams = state.exams || [];
+  const exams = (state.exams || []).filter((exam) => exam.kind !== 'practice');
   el('quizHistoryHint').textContent = exams.length ? exams.length + ' 次' : '';
   list.innerHTML = exams.length
     ? exams.map((exam) => '<div class="row" data-quiz-open="' + exam.id + '">' +
@@ -1089,10 +1243,10 @@ function kindLabel(kind) {
   return hit ? hit[1] : '题目';
 }
 
-function quizResultHTML() {
-  const quiz = quizState();
-  const exam = quiz.exam || {};
-  const items = quiz.items;
+/// 交卷后的成绩页：测验与练习共用。
+function resultHTML(machine) {
+  const exam = machine.exam || {};
+  const items = machine.items;
   const right = items.filter((item) => item.verdict === 'correct').length;
   const rows = items.map((item) => {
     const okClass = item.verdict === 'correct' ? '' : (item.verdict === 'partial' ? ' is-partial' : '');
@@ -1280,21 +1434,25 @@ function bind() {
       await renderQuiz();
       return;
     }
+    const paperRerender = () => {
+      if (state.view === 'exam') { renderExamMain(); renderExamSide(); }
+      else { renderQuizMain(); renderQuizSide(); }
+    };
     if (event.target.closest('[data-quiz-again]')) {
-      const quiz = quizState();
-      quiz.exam = null;
-      quiz.items = [];
-      quiz.answers = {};
-      quiz.view = 'setup';
-      quiz.progress = '';
-      renderQuizMain();
-      renderQuizSide();
+      const machine = state.view === 'exam' ? practiceState() : quizState();
+      machine.exam = null;
+      machine.items = [];
+      machine.answers = {};
+      machine.view = 'setup';
+      machine.progress = '';
+      machine.located = false;
+      paperRerender();
       return;
     }
     if (event.target.closest('[data-quiz-review]')) {
-      quizState().view = 'paper';
-      renderQuizMain();
-      renderQuizSide();
+      const machine = state.view === 'exam' ? practiceState() : quizState();
+      machine.view = 'paper';
+      paperRerender();
       return;
     }
     const learnTodo = event.target.closest('[data-learn-id]');
@@ -1523,7 +1681,10 @@ function bind() {
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
-      if (state.view === 'exam') submitGrade();
+      if (state.view === 'exam') {
+        if (!el('cardWrap').hidden) submitGrade();
+        else if (practiceState().view === 'paper') submitPractice();
+      }
     }
   });
 }

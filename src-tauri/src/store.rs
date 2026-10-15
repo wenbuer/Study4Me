@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS exams (
     score       REAL,
     correct     INTEGER NOT NULL DEFAULT 0,
     report      TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL DEFAULT 'quiz',
     created_at  TEXT NOT NULL,
     finished_at TEXT
 );
@@ -213,6 +214,7 @@ impl Store {
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN section TEXT NOT NULL DEFAULT ''", []);
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN content TEXT NOT NULL DEFAULT ''", []);
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN exam_notes TEXT NOT NULL DEFAULT '[]'", []);
+        let _ = conn.execute("ALTER TABLE exams ADD COLUMN kind TEXT NOT NULL DEFAULT 'quiz'", []);
         Ok(Self { conn })
     }
 
@@ -591,13 +593,13 @@ impl Store {
     /// 建一份卷子：题目位置先占好（只有题型和分值），题干由模型分批填。
     pub fn create_exam(&self, title: &str, material_id: Option<i64>, scope: &[i64],
                        kinds: &[String], points: &[f64], created_at: &str,
-                       cards: &[(i64, String)]) -> Result<i64> {
+                       cards: &[(i64, String)], kind: &str) -> Result<i64> {
         let full: f64 = points.iter().sum();
         self.conn.execute(
-            "INSERT INTO exams (title, material_id, scope, slot_kinds, total, full_score, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'draft', ?7)",
+            "INSERT INTO exams (title, material_id, scope, slot_kinds, total, full_score, status, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'draft', ?7, ?8)",
             params![title, material_id, serde_json::to_string(scope)?,
-                    serde_json::to_string(kinds)?, kinds.len() as i64, full, created_at],
+                    serde_json::to_string(kinds)?, kinds.len() as i64, full, kind, created_at],
         )?;
         let exam_id = self.conn.last_insert_rowid();
         for (i, kind) in kinds.iter().enumerate() {
@@ -732,6 +734,7 @@ impl Store {
             report: r.get("report")?,
             created_at: r.get("created_at")?,
             finished_at: r.get("finished_at")?,
+            kind: r.get("kind").unwrap_or_else(|_| "quiz".to_string()),
             made: r.get("made").unwrap_or(0),
         })
     }
@@ -775,6 +778,8 @@ pub struct Exam {
     pub report: String,
     pub created_at: String,
     pub finished_at: Option<String>,
+    /// quiz = 测验页出的卷子，practice = 练习页的随机练习
+    pub kind: String,
     /// 已经出好的题数（stem 非空）
     pub made: i64,
 }

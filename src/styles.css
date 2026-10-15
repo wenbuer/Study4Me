@@ -37,6 +37,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* hidden 属性优先于各处的 display 规则：练习页靠它切换「练习卷 / 单卡复习」两栏 */
+[hidden] { display: none !important; }
+
 .shell {
   display: grid;
   grid-template-columns: 236px 1fr;

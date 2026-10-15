@@ -714,6 +714,36 @@ mod exam_tests {
         assert_eq!((score, verdict), (0.0, "wrong"));
     }
 
+    fn unit_card(section: &str, seq: i64) -> Card {
+        Card {
+            id: seq + 1, material_id: 1, material_title: "材料".into(), seq,
+            section: section.into(), title: format!("{section} 第 {seq} 单元"),
+            content: String::new(), summary: String::new(), key_points: vec![],
+            question: String::new(), answer: String::new(), tags: vec![],
+            state: 0, stability: 0.0, difficulty: 0.0, reps: 0, lapses: 0,
+            last_review: None, due: String::new(), learned: true, exam_notes: vec![],
+        }
+    }
+
+    #[test]
+    fn practice_picks_one_to_three_units_per_section() {
+        let mut cards: Vec<Card> = Vec::new();
+        for (index, section) in ["第一章", "第二章", "第三章"].iter().enumerate() {
+            for n in 0..4 {
+                cards.push(unit_card(section, (index * 4 + n) as i64));
+            }
+        }
+        let (kinds, points, picked) = practice_slots(&cards);
+
+        assert_eq!(kinds.len(), picked.len());
+        assert_eq!(points.len(), picked.len());
+        assert!((3..=9).contains(&picked.len()), "每章 1–3 题，实得 {}", picked.len());
+        for section in ["第一章", "第二章", "第三章"] {
+            assert!(picked.iter().any(|card| card.section == section), "{section} 没出题");
+        }
+        assert!(kinds.iter().any(|kind| kind == "short"), "至少要有一道简答");
+    }
+
     #[test]
     fn slots_interleave_kinds_and_sum_points() {
         let plan = vec![
@@ -844,11 +874,90 @@ fn create_exam(
         format!("{base} · {total} 题")
     });
     let exam_id = store
-        .create_exam(&name, material_id, &scope, &kinds, &points, &now_iso(), &pairs)
+        .create_exam(&name, material_id, &scope, &kinds, &points, &now_iso(), &pairs, "quiz")
         .map_err(err_str)?;
     Ok(ExamOut {
         exam_id,
         total: total as i64,
+        full_score: points.iter().sum(),
+        cards: pairs.len() as i64,
+    })
+}
+
+/// 练习页的随机出题：按章节分组，每章 1–3 道，题型随机，至少留一道简答。
+fn practice_slots(cards: &[Card]) -> (Vec<String>, Vec<f64>, Vec<Card>) {
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
+        | 1;
+    let mut roll = |bound: usize| -> usize {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 33) as usize % bound.max(1)
+    };
+
+    let mut groups: Vec<(String, Vec<Card>)> = Vec::new();
+    for card in cards {
+        let key = if card.section.trim().is_empty() {
+            "未分类".to_string()
+        } else {
+            card.section.clone()
+        };
+        match groups.iter_mut().find(|(name, _)| *name == key) {
+            Some((_, list)) => list.push(card.clone()),
+            None => groups.push((key, vec![card.clone()])),
+        }
+    }
+
+    let mut picked: Vec<Card> = Vec::new();
+    for (_, list) in groups {
+        let take = (1 + roll(3)).min(list.len());
+        let mut pool = list;
+        for _ in 0..take {
+            let index = roll(pool.len());
+            picked.push(pool.remove(index));
+        }
+    }
+
+    const KINDS: [&str; 5] = ["single", "judge", "blank", "multi", "short"];
+    let mut kinds: Vec<String> = picked
+        .iter()
+        .map(|_| KINDS[roll(KINDS.len())].to_string())
+        .collect();
+    if !kinds.iter().any(|kind| kind == "short") {
+        let index = roll(kinds.len());
+        kinds[index] = "short".to_string();
+    }
+    let points = kinds.iter().map(|kind| points_of(kind)).collect();
+    (kinds, points, picked)
+}
+
+/// 随机出一份练习卷：只考已经学过的单元，题量与题型都由系统随机。
+#[tauri::command]
+fn create_practice(state: State<'_, AppState>, material_id: Option<i64>) -> Result<ExamOut, String> {
+    let store = state.store.lock().unwrap();
+    let learned: Vec<Card> = store
+        .list_cards(material_id)
+        .map_err(err_str)?
+        .into_iter()
+        .filter(|card| card.learned)
+        .collect();
+    if learned.is_empty() {
+        return Err("还没有学过的单元，先去「学习」页学几节".into());
+    }
+    let (kinds, points, picked) = practice_slots(&learned);
+    let pairs: Vec<(i64, String)> = picked.iter().map(|card| (card.id, card.title.clone())).collect();
+    let scope: Vec<i64> = picked.iter().map(|card| card.id).collect();
+    let total = kinds.len() as i64;
+    let name = format!("练习 · {total} 题");
+    let exam_id = store
+        .create_exam(&name, material_id, &scope, &kinds, &points, &now_iso(), &pairs, "practice")
+        .map_err(err_str)?;
+    Ok(ExamOut {
+        exam_id,
+        total,
         full_score: points.iter().sum(),
         cards: pairs.len() as i64,
     })
@@ -1238,6 +1347,7 @@ pub fn run() {
             set_autostart,
             set_notify,
             create_exam,
+            create_practice,
             exam_step,
             get_exam,
             list_exams,
