@@ -440,13 +440,22 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
   margin: 0 auto;
 }
 
-/* 学习页顶部的抽屉：平时收起，鼠标靠近上边界（或键盘焦点进入）才滑出 */
+/* 学习页顶部的抽屉：不占高度，鼠标靠近上边界（或键盘焦点进入）才滑出 */
 .study-drawer {
   position: relative;
   flex: none;
-  height: 14px;
-  margin-bottom: 6px;
+  height: 0;
   z-index: 6;
+}
+
+/* 触发带落在页面顶部的留白里，既不占布局也不遮正文 */
+.study-drawer::before {
+  content: '';
+  position: absolute;
+  top: -20px;
+  left: 0;
+  right: 0;
+  height: 20px;
 }
 
 .study-tools {
