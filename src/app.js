@@ -542,7 +542,7 @@ async function renderPlans() {
   box.innerHTML =
     '<div class="plan-head"><div>' +
     '<div class="plan-title">' + escapeHtml(plan.materialTitle) + '</div>' +
-    '<div class="plan-sub">第 ' + current.dayIndex + ' / ' + plan.days + ' 天 · 每天 ' +
+    '<div class="plan-sub">进度第 ' + current.dayIndex + ' / ' + plan.days + ' 天 · 每天 ' +
     plan.perDay + ' 个单元 · 今天还剩 ' + pending.length + ' 个 · 全库还剩 ' +
     current.remainingUnits + ' 个未学</div></div>' +
     '<div class="row-side">' + percent + '%</div></div>' +

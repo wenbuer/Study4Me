@@ -358,15 +358,10 @@ fn delete_plan(state: State<'_, AppState>, plan_id: i64) -> Result<(), String> {
     state.store.lock().unwrap().delete_plan(plan_id).map_err(err_str)
 }
 
-/// 今天的计划进度：第几天、今天该学哪些单元、还剩多少没学。
+/// 今天的计划进度：按实际进度算到第几段、这一段学哪些单元、还剩多少没学。
 #[tauri::command]
 fn plan_today(state: State<'_, AppState>, plan_id: i64) -> Result<Option<store::PlanToday>, String> {
-    state
-        .store
-        .lock()
-        .unwrap()
-        .plan_today(plan_id, &today())
-        .map_err(err_str)
+    state.store.lock().unwrap().plan_today(plan_id).map_err(err_str)
 }
 
 #[tauri::command]
@@ -447,7 +442,7 @@ fn today_queue(state: State<'_, AppState>) -> Result<Queue, String> {
     let day = today();
     Ok(Queue {
         due: store.due_cards(&day, 200).map_err(err_str)?,
-        scheduled: store.scheduled_cards(&day, 100).map_err(err_str)?,
+        scheduled: store.scheduled_cards(100).map_err(err_str)?,
         fresh: store.learning_cards(60).map_err(err_str)?,
         rhythm: store.due_forecast(&day, 6).map_err(err_str)?,
         stats: store.stats(&day).map_err(err_str)?,

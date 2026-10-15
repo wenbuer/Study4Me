@@ -351,10 +351,10 @@ impl Store {
     }
 
     /// 今天的学习计划排到、但还没标记已学的单元（首页待办的前半部分）。
-    pub fn scheduled_cards(&self, today: &str, limit: i64) -> Result<Vec<Card>> {
+    pub fn scheduled_cards(&self, limit: i64) -> Result<Vec<Card>> {
         let mut out: Vec<Card> = Vec::new();
         for plan in self.list_plans()? {
-            let Some(today_plan) = self.plan_today(plan.id, today)? else { continue };
+            let Some(today_plan) = self.plan_today(plan.id)? else { continue };
             out.extend(today_plan.day_units.into_iter().filter(|card| !card.learned));
             if out.len() as i64 >= limit {
                 break;
@@ -507,7 +507,7 @@ pub struct Plan {
 #[serde(rename_all = "camelCase")]
 pub struct PlanToday {
     pub plan: Plan,
-    /// 今天是计划的第几天（从 1 开始；超出计划天数时停在最后一天）
+    /// 按实际学完的段数算出的进度天（从 1 开始；全部学完或超出计划天数时停在最后一天）
     pub day_index: i64,
     pub day_units: Vec<Card>,
     pub remaining_units: i64,
@@ -564,33 +564,25 @@ impl Store {
         Ok(())
     }
 
-    /// 今天该学哪些单元：按计划天数把材料顺序切开，取第 n 天那一段。
-    pub fn plan_today(&self, id: i64, today: &str) -> Result<Option<PlanToday>> {
+    /// 今天该学哪些单元：从第一个还没学的单元起，按每天的量取一段。
+    /// 断点跟着实际进度走，不按自然日——隔几天没打开，今天仍是接着上次学到的位置往下排。
+    pub fn plan_today(&self, id: i64) -> Result<Option<PlanToday>> {
         let Some(plan) = self.get_plan(id)? else {
             return Ok(None);
         };
-        let elapsed = match (
-            chrono::NaiveDate::parse_from_str(&plan.start_date, "%Y-%m-%d"),
-            chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d"),
-        ) {
-            (Ok(start), Ok(now)) => (now - start).num_days() + 1,
-            _ => 1,
-        };
-        let day_index = elapsed.clamp(1, plan.days.max(1));
+        let per_day = plan.per_day.max(1) as usize;
         let cards = self.list_cards(Some(plan.material_id))?;
-        let start = ((day_index - 1) * plan.per_day).max(0) as usize;
-        let day_units: Vec<Card> = cards
-            .iter()
-            .skip(start)
-            .take(plan.per_day.max(1) as usize)
-            .cloned()
-            .collect();
-        let remaining_units = cards.iter().filter(|card| !card.learned).count() as i64;
+        // 断点取第一个未学单元（跳着学的先把漏掉的那个补回来）；全部学完则停在末尾。
+        let start = cards.iter().position(|card| !card.learned).unwrap_or(cards.len());
+        let day_units: Vec<Card> = cards[start..].iter().take(per_day).cloned().collect();
+        // 天号按已学完的段数算：落后于自然日也不会跳过没学的章节。
+        let learned = cards.iter().filter(|card| card.learned).count() as i64;
+        let day_index = (learned / per_day as i64 + 1).clamp(1, plan.days.max(1));
         Ok(Some(PlanToday {
             plan,
             day_index,
             day_units,
-            remaining_units,
+            remaining_units: cards.len() as i64 - learned,
         }))
     }
 
@@ -911,4 +903,71 @@ fn streak(days_desc: &[String], today: &str) -> i64 {
         cursor = add_days(&cursor, -1);
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store(tag: &str) -> Store {
+        let path = std::env::temp_dir().join(format!("zhizhi-store-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        Store::open(&path).expect("建库")
+    }
+
+    fn unit(title: &str) -> NewCard {
+        NewCard { title: title.into(), ..Default::default() }
+    }
+
+    /// 学完第一段后隔几天再打开，今天排的仍是第二段，不按自然日跳到后面的章节。
+    #[test]
+    fn plan_today_resumes_from_first_unlearned_unit() {
+        let store = temp_store("plan-resume");
+        let material = store
+            .insert_material("材料", "in.md", "md", 10, "正文", "2026-10-01")
+            .unwrap();
+        store
+            .insert_cards(
+                material,
+                &[unit("章节1-1"), unit("章节1-2"), unit("章节2-1"), unit("章节2-2"), unit("章节3-1")],
+                "2026-10-01",
+            )
+            .unwrap();
+        let plan = store.insert_plan(material, 3, 2, "2026-10-01", "2026-10-01").unwrap();
+
+        let first = store.plan_today(plan).unwrap().unwrap();
+        assert_eq!(first.day_index, 1);
+        assert_eq!(titles(&first.day_units), ["章节1-1", "章节1-2"]);
+        for card in &first.day_units {
+            store.mark_learned(card.id, true).unwrap();
+        }
+
+        // 中间三天没打开：断点停在第二段，而不是跳到第四天该有的位置。
+        let later = store.plan_today(plan).unwrap().unwrap();
+        assert_eq!(later.day_index, 2);
+        assert_eq!(titles(&later.day_units), ["章节2-1", "章节2-2"]);
+        assert_eq!(later.remaining_units, 3);
+    }
+
+    /// 全部学完后当天没有待学单元。
+    #[test]
+    fn plan_today_is_empty_once_every_unit_is_learned() {
+        let store = temp_store("plan-done");
+        let material = store
+            .insert_material("材料", "in.md", "md", 10, "正文", "2026-10-01")
+            .unwrap();
+        store.insert_cards(material, &[unit("章节1-1"), unit("章节1-2")], "2026-10-01").unwrap();
+        let plan = store.insert_plan(material, 2, 2, "2026-10-01", "2026-10-01").unwrap();
+
+        for card in store.list_cards(Some(material)).unwrap() {
+            store.mark_learned(card.id, true).unwrap();
+        }
+        let today = store.plan_today(plan).unwrap().unwrap();
+        assert!(today.day_units.is_empty());
+        assert_eq!(today.remaining_units, 0);
+    }
+
+    fn titles(cards: &[Card]) -> Vec<&str> {
+        cards.iter().map(|card| card.title.as_str()).collect()
+    }
 }
