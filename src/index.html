@@ -71,8 +71,8 @@
       <section class="view is-active" data-view="today">
         <div class="grid-today">
           <div class="col-main">
-            <div class="block" id="planBlock"></div>
             <div class="block" id="todayFocus"></div>
+            <div class="block" id="planBlock"></div>
           </div>
           <div class="col-side">
             <div class="block">
@@ -151,26 +151,26 @@
 
       <!-- 学习 -->
       <section class="view" data-view="learn">
+        <div class="study-tools">
+          <label class="tool-field">
+            <span class="tool-label">素材库</span>
+            <span class="select-wrap">
+              <svg class="select-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z" /></svg>
+              <select id="learnMaterial" title="切换素材库"></select>
+              <svg class="select-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </span>
+          </label>
+          <label class="tool-field">
+            <span class="tool-label">搜索</span>
+            <span class="search-wrap">
+              <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5L21 21" /></svg>
+              <input id="learnSearch" type="text" placeholder="搜索单元标题" />
+            </span>
+          </label>
+        </div>
         <div class="grid-study">
           <aside class="study-side">
             <div class="block-head"><h2>学习单元</h2></div>
-            <div class="study-tools">
-              <label class="tool-field">
-                <span class="tool-label">素材库</span>
-                <span class="select-wrap">
-                  <svg class="select-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v14H4zM13 5h7v14h-7z" /></svg>
-                  <select id="learnMaterial" title="切换素材库"></select>
-                  <svg class="select-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-                </span>
-              </label>
-              <label class="tool-field">
-                <span class="tool-label">搜索</span>
-                <span class="search-wrap">
-                  <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5L21 21" /></svg>
-                  <input id="learnSearch" type="text" placeholder="搜索单元标题" />
-                </span>
-              </label>
-            </div>
             <div class="list list-compact" id="learnQueue"></div>
           </aside>
           <div class="block study-card" id="learnCard"></div>

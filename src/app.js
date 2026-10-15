@@ -23,6 +23,7 @@ const state = {
   collapsed: [],
   learnQuery: '',
   learnMaterial: null,
+  learnCardId: null,
 };
 
 const VIEW_TITLES = {
@@ -642,6 +643,7 @@ function renderLearn() {
     el('learnQueue').innerHTML = '<div class="empty">' +
       (query ? '没有匹配「' + escapeHtml(state.learnQuery) + '」的单元' : '这里还没有待学单元') + '</div>';
     el('learnCard').innerHTML = '<div class="empty">导入材料后，这里会按章节列出全部学习单元</div>';
+    state.learnCardId = null;
     return;
   }
 
@@ -697,6 +699,11 @@ function renderLearn() {
     '<button class="btn btn-primary" data-action="learn-to-exam" data-id="' + current.id + '">学完去练习</button>' +
     '<button class="btn" data-action="learn-next">下一个单元</button></div>';
 
+  // 换单元就把内容区滚回顶部：每个章节各看各的，不沿用上一个单元的滚动位置
+  if (state.learnCardId !== current.id) {
+    state.learnCardId = current.id;
+    el('learnCard').scrollTop = 0;
+  }
   renderFlowcharts(el('learnCard'));
 }
 

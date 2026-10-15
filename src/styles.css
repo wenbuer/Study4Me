@@ -437,17 +437,21 @@ input::placeholder, textarea::placeholder { color: var(--fg-dim); }
   margin: 0 auto;
 }
 
-/* 学习页工具条：素材库切换 + 搜索，收在一个浅色工具面板里 */
+/* 学习页工具条：素材库切换 + 搜索横排在页面顶部，下面才是章节与内容 */
 .study-tools {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 2px 0 12px;
+  flex: none;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 0 0 14px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-2);
 }
+
+.study-tools .tool-field:first-child { flex: 0 0 260px; }
+.study-tools .tool-field:last-child { flex: 1 1 auto; min-width: 0; }
 
 .tool-field { display: block; }
 .tool-label {
